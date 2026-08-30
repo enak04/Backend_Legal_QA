@@ -46,6 +46,16 @@ def format_conversation_response(
             }
             for r in record.legal_qa_results
         ],
+        "files": [
+            {
+                "file_id": f.file_id,
+                "filename": f.filename,
+                "content_type": f.content_type,
+                "size_bytes": f.size_bytes,
+                "uploaded_at": f.uploaded_at,
+            }
+            for f in record.files
+        ],
         "created_at": record.created_at,
         "updated_at": record.updated_at,
     }

@@ -15,7 +15,7 @@ from pathlib import Path
 
 import aiosqlite
 
-from database.models import ConversationRecord, Mode
+from database.models import ConversationRecord, Mode, FileAttachment
 
 
 # ── Abstract interface ────────────────────────────────────────
@@ -43,6 +43,21 @@ class ConversationRepository(ABC):
     async def delete(self, conversation_id: str) -> bool:
         """Delete a conversation.  Returns ``True`` if it existed."""
 
+    @abstractmethod
+    async def save_file(
+        self,
+        conversation_id: str,
+        file_id: str,
+        filename: str,
+        content_type: str,
+        content: bytes,
+    ) -> None:
+        """Store the file content linked to a conversation."""
+
+    @abstractmethod
+    async def get_file(self, file_id: str) -> dict[str, Any] | None:
+        """Retrieve a file document by ID, containing content bytes."""
+
 
 # ── SQLite implementation ─────────────────────────────────────
 
@@ -57,6 +72,17 @@ CREATE TABLE IF NOT EXISTS conversations (
     legal_qa_results TEXT NOT NULL DEFAULT '[]',
     created_at       TEXT NOT NULL,
     updated_at       TEXT NOT NULL
+);
+"""
+
+_CREATE_FILES_TABLE = """
+CREATE TABLE IF NOT EXISTS files (
+    file_id         TEXT PRIMARY KEY,
+    conversation_id TEXT NOT NULL,
+    filename        TEXT NOT NULL,
+    content_type    TEXT NOT NULL,
+    content         BLOB NOT NULL,
+    uploaded_at     TEXT NOT NULL
 );
 """
 
@@ -76,6 +102,7 @@ class SQLiteConversationRepository(ConversationRepository):
     async def initialize(self) -> None:
         async with aiosqlite.connect(self._db_path) as db:
             await db.execute(_CREATE_TABLE)
+            await db.execute(_CREATE_FILES_TABLE)
             await db.commit()
 
     # ── CRUD ──────────────────────────────────────────────────
@@ -115,7 +142,25 @@ class SQLiteConversationRepository(ConversationRepository):
             row = await cursor.fetchone()
             if row is None:
                 return None
-            return self._row_to_record(row)
+            
+            # Fetch associated files
+            file_cursor = await db.execute(
+                "SELECT file_id, filename, content_type, length(content) as size_bytes, uploaded_at FROM files WHERE conversation_id = ?",
+                (conversation_id,),
+            )
+            file_rows = await file_cursor.fetchall()
+            files_list = [
+                FileAttachment(
+                    file_id=fr["file_id"],
+                    filename=fr["filename"],
+                    content_type=fr["content_type"],
+                    size_bytes=fr["size_bytes"],
+                    uploaded_at=fr["uploaded_at"],
+                )
+                for fr in file_rows
+            ]
+
+            return self._row_to_record(row, files_list)
 
     async def update(self, record: ConversationRecord) -> ConversationRecord:
         record.updated_at = datetime.now(timezone.utc).isoformat()
@@ -152,13 +197,60 @@ class SQLiteConversationRepository(ConversationRepository):
                 "DELETE FROM conversations WHERE conversation_id = ?",
                 (conversation_id,),
             )
+            await db.execute(
+                "DELETE FROM files WHERE conversation_id = ?",
+                (conversation_id,),
+            )
             await db.commit()
             return cursor.rowcount > 0
+
+    # ── File-specific Storage ─────────────────────────────────
+
+    async def save_file(
+        self,
+        conversation_id: str,
+        file_id: str,
+        filename: str,
+        content_type: str,
+        content: bytes,
+    ) -> None:
+        async with aiosqlite.connect(self._db_path) as db:
+            await db.execute(
+                """
+                INSERT INTO files (file_id, conversation_id, filename, content_type, content, uploaded_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    file_id,
+                    conversation_id,
+                    filename,
+                    content_type,
+                    content,
+                    datetime.now(timezone.utc).isoformat(),
+                ),
+            )
+            await db.commit()
+
+    async def get_file(self, file_id: str) -> dict[str, Any] | None:
+        async with aiosqlite.connect(self._db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                "SELECT filename, content_type, content FROM files WHERE file_id = ?",
+                (file_id,),
+            )
+            row = await cursor.fetchone()
+            if row is None:
+                return None
+            return {
+                "filename": row["filename"],
+                "content_type": row["content_type"],
+                "content": row["content"],
+            }
 
     # ── helpers ───────────────────────────────────────────────
 
     @staticmethod
-    def _row_to_record(row: aiosqlite.Row) -> ConversationRecord:
+    def _row_to_record(row: aiosqlite.Row, files_list: list[FileAttachment]) -> ConversationRecord:
         return ConversationRecord(
             conversation_id=row["conversation_id"],
             mode=Mode(row["mode"]),
@@ -167,6 +259,79 @@ class SQLiteConversationRepository(ConversationRepository):
             messages=json.loads(row["messages"]),
             last_assistant_question=row["last_assistant_question"],
             legal_qa_results=json.loads(row["legal_qa_results"]),
+            files=files_list,
             created_at=row["created_at"],
             updated_at=row["updated_at"],
         )
+
+
+# ── MongoDB implementation ───────────────────────────────────
+
+class MongoDBConversationRepository(ConversationRepository):
+    """Async MongoDB-backed conversation store using motor."""
+
+    def __init__(self, connection_uri: str, database_name: str = "legal_qa") -> None:
+        from motor.motor_asyncio import AsyncIOMotorClient
+        self._client = AsyncIOMotorClient(connection_uri)
+        self._db = self._client[database_name]
+        self._col = self._db["conversations"]
+        self._files_col = self._db["files"]
+
+    async def initialize(self) -> None:
+        await self._col.create_index("conversation_id", unique=True)
+        await self._files_col.create_index("file_id", unique=True)
+
+    async def create(self, record: ConversationRecord) -> ConversationRecord:
+        doc = record.model_dump()
+        await self._col.insert_one(doc)
+        return record
+
+    async def get(self, conversation_id: str) -> ConversationRecord | None:
+        doc = await self._col.find_one({"conversation_id": conversation_id})
+        if doc is None:
+            return None
+        doc.pop("_id", None)
+        return ConversationRecord(**doc)
+
+    async def update(self, record: ConversationRecord) -> ConversationRecord:
+        record.updated_at = datetime.now(timezone.utc).isoformat()
+        doc = record.model_dump()
+        await self._col.replace_one(
+            {"conversation_id": record.conversation_id},
+            doc
+        )
+        return record
+
+    async def delete(self, conversation_id: str) -> bool:
+        res = await self._col.delete_one({"conversation_id": conversation_id})
+        await self._files_col.delete_many({"conversation_id": conversation_id})
+        return res.deleted_count > 0
+
+    async def save_file(
+        self,
+        conversation_id: str,
+        file_id: str,
+        filename: str,
+        content_type: str,
+        content: bytes,
+    ) -> None:
+        from bson import Binary
+        await self._files_col.insert_one({
+            "file_id": file_id,
+            "conversation_id": conversation_id,
+            "filename": filename,
+            "content_type": content_type,
+            "content": Binary(content),
+            "uploaded_at": datetime.now(timezone.utc).isoformat(),
+        })
+
+    async def get_file(self, file_id: str) -> dict[str, Any] | None:
+        doc = await self._files_col.find_one({"file_id": file_id})
+        if doc is None:
+            return None
+        return {
+            "filename": doc["filename"],
+            "content_type": doc["content_type"],
+            "content": bytes(doc["content"]),
+        }
+

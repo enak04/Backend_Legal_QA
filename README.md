@@ -179,10 +179,38 @@ Below is the detailed specification of all available endpoints. You can also vie
       }
     ],
     "legal_qa_results": [...],
+    "files": [],
     "created_at": "2026-08-30T04:09:50Z",
     "updated_at": "2026-08-30T04:10:05Z"
   }
   ```
+
+---
+
+### 6. Upload a Document Attachment
+* **Endpoint:** `POST /api/conversations/{conversation_id}/files`
+* **Request Content-Type:** `multipart/form-data`
+* **Form Parameters:**
+  * `file`: (Binary File) e.g., `contract.pdf`
+* **Response (200 OK):**
+  ```json
+  {
+    "file_id": "c1f7b8d9e2a3",
+    "filename": "contract.pdf",
+    "content_type": "application/pdf",
+    "size_bytes": 1048576,
+    "uploaded_at": "2026-08-30T04:15:00.000000+00:00"
+  }
+  ```
+
+---
+
+### 7. Download/Retrieve a Document Attachment
+* **Endpoint:** `GET /api/conversations/{conversation_id}/files/{file_id}`
+* **Description:** Downloads the raw binary of the uploaded file with original content-type and filename headers.
+* **Response:** Binary file stream.
+
+---
 
 ## Configuration
 
@@ -192,10 +220,12 @@ All settings are loaded from environment variables (or `.env` file):
 |----------|---------|-------------|
 | `LEGAL_QA_BASE_URL` | `http://localhost:8000` | Legal_QA service URL |
 | `LEGAL_QA_TIMEOUT` | `120` | Request timeout (seconds) |
-| `DATABASE_URL` | `sqlite:///./conversations.db` | SQLite database path |
+| `DATABASE_URL` | `sqlite:///./conversations.db` | Database URL. Supports SQLite (`sqlite:///...`) and MongoDB (`mongodb://...` or `mongodb+srv://...`) |
 | `CORS_ORIGINS` | `http://localhost:3000,http://localhost:5173` | Allowed CORS origins |
 | `APP_HOST` | `0.0.0.0` | Server bind host |
 | `APP_PORT` | `8080` | Server bind port |
+| `OPENAI_API_KEY` | `None` | OpenAI API key for conversational intake |
+| `OPENAI_MODEL` | `gpt-4o-mini` | OpenAI Model |
 
 ## Project Structure
 
@@ -205,6 +235,7 @@ Backend_Legal_QA/
 ├── config.py                 # Environment configuration
 ├── api/routes/
 │   ├── conversations.py      # Conversation endpoints
+│   ├── files.py              # File attachment upload/download routes
 │   ├── modes.py              # Mode listing endpoint
 │   └── health.py             # Health check
 ├── conversation/
@@ -216,8 +247,9 @@ Backend_Legal_QA/
 │   └── query_builder.py      # Query construction from facts
 ├── database/
 │   ├── models.py             # Data models (Pydantic)
-│   └── repository.py         # Storage abstraction + SQLite impl
+│   └── repository.py         # Storage abstraction + SQLite & MongoDB impls
 ├── services/
+│   ├── intake_service.py     # OpenAI conversational intake service
 │   └── response_formatter.py # Response formatting
 └── tests/                    # Test suite (pytest)
 ```

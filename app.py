@@ -23,12 +23,13 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from api.routes.conversations import router as conversations_router
+from api.routes.files import router as files_router
 from api.routes.health import router as health_router
 from api.routes.modes import router as modes_router
 from config import settings
 from conversation.followup import FollowUpEngine
 from conversation.manager import ConversationManager
-from database.repository import SQLiteConversationRepository
+from database.repository import SQLiteConversationRepository, MongoDBConversationRepository
 from legal_qa.client import LegalQAClient
 from legal_qa.query_builder import QueryBuilder
 from services.intake_service import OpenAIIntakeService
@@ -51,9 +52,15 @@ async def lifespan(app: FastAPI):
     logger.info("Starting Application Backend …")
 
     # Database
-    repo = SQLiteConversationRepository(settings.database_url)
+    db_url = settings.database_url
+    if db_url.startswith(("mongodb://", "mongodb+srv://")):
+        repo = MongoDBConversationRepository(db_url)
+        logger.info("Initializing MongoDB repository...")
+    else:
+        repo = SQLiteConversationRepository(db_url)
+        logger.info("Initializing SQLite repository...")
     await repo.initialize()
-    logger.info("Database initialised: %s", settings.database_url)
+    logger.info("Database initialised: %s", db_url)
 
     # Legal_QA client
     legal_qa_client = LegalQAClient(
@@ -132,6 +139,7 @@ app.add_middleware(
 app.include_router(health_router)
 app.include_router(modes_router)
 app.include_router(conversations_router)
+app.include_router(files_router)
 
 
 # ── Direct run ────────────────────────────────────────────────

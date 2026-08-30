@@ -65,6 +65,19 @@ class LegalQAResult(BaseModel):
     retrieved_cases: list[RetrievedCase]
 
 
+# ── File attachment model ────────────────────────────────────
+
+class FileAttachment(BaseModel):
+    """Metadata for uploaded files linked to a conversation."""
+    file_id: str
+    filename: str
+    content_type: str
+    size_bytes: int
+    uploaded_at: str = Field(
+        default_factory=lambda: datetime.now(timezone.utc).isoformat()
+    )
+
+
 # ── Conversation record ──────────────────────────────────────
 
 class ConversationRecord(BaseModel):
@@ -78,6 +91,7 @@ class ConversationRecord(BaseModel):
     messages: list[Message] = Field(default_factory=list)
     last_assistant_question: str | None = None
     legal_qa_results: list[LegalQAResult] = Field(default_factory=list)
+    files: list[FileAttachment] = Field(default_factory=list)
     created_at: str = Field(
         default_factory=lambda: datetime.now(timezone.utc).isoformat()
     )
