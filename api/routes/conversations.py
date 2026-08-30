@@ -138,10 +138,7 @@ async def send_message(
         logger.error("Legal_QA bad response: %s", exc)
         raise HTTPException(
             status_code=502,
-            detail=(
-                "Received an unexpected response from the legal "
-                "analysis service."
-            ),
+            detail=f"Received an unexpected response from the legal analysis service: {exc}",
         )
     except Exception as exc:
         logger.exception("Unexpected error processing message")
