@@ -128,6 +128,8 @@ class ConversationManager:
                 conversation_id,
                 intake_result.extracted_facts,
             )
+        if intake_result.case_state:
+            state.facts["case_state"] = intake_result.case_state
 
         # 5. Check if more information is needed
         if not intake_result.is_ready_for_qa:
@@ -143,6 +145,7 @@ class ConversationManager:
                 "conversation_id": state.conversation_id,
                 "mode": state.mode.value,
                 "message": followup_question,
+                "case_state": state.facts.get("case_state"),
                 "timestamp": state.messages[-1].timestamp,
             }
 
@@ -175,6 +178,7 @@ class ConversationManager:
             "conversation_id": state.conversation_id,
             "mode": state.mode.value,
             "answer": result.answer,
+            "case_state": state.facts.get("case_state"),
             "reasoning_chain": result.reasoning_chain,
             "sources": [
                 {"question": c.question, "answer": c.answer}

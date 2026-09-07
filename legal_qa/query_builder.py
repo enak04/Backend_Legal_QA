@@ -40,7 +40,7 @@ class QueryBuilder:
         non_meta_facts = {
             k: v
             for k, v in state.facts.items()
-            if k != "detected_domain"
+            if k not in ("detected_domain", "case_state") and not isinstance(v, (dict, list))
         }
 
         if len(user_messages) == 1 and not non_meta_facts:

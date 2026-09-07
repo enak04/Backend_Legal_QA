@@ -25,6 +25,7 @@ def format_conversation_response(
         "conversation_id": record.conversation_id,
         "mode": record.mode.value,
         "stage": record.stage.value,
+        "case_state": record.facts.get("case_state"),
         "facts": record.facts,
         "messages": [
             {

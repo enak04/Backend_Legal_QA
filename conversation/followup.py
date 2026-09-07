@@ -236,6 +236,72 @@ DOMAINS: list[LegalDomain] = [
         ],
         min_required_facts=1,
     ),
+    LegalDomain(
+        name="money_recovery",
+        keywords=[
+            "lent money", "borrowed", "recover money", "return money",
+            "friend money", "repayment", "loan to friend", "debt",
+            "owe me money", "refusing to return", "refuses to return",
+            "given money", "lent someone",
+        ],
+        fact_requirements=[
+            FactRequirement(
+                key="transaction_nature",
+                question=(
+                    "When you gave the money, was it clearly agreed as a loan "
+                    "that would be repaid, or was it for an investment or something else?"
+                ),
+                priority=10,
+            ),
+            FactRequirement(
+                key="repayment_deadline",
+                question="Was there an agreed date or timeframe for returning the money?",
+                priority=9,
+            ),
+            FactRequirement(
+                key="state",
+                question="Which state did this transaction take place in?",
+                priority=8,
+            ),
+            FactRequirement(
+                key="evidence",
+                question=(
+                    "Do you have any proof of the transfer or acknowledgment "
+                    "(such as UPI, bank statement, or WhatsApp messages)?"
+                ),
+                priority=7,
+                required=False,
+            ),
+        ],
+        min_required_facts=2,
+    ),
+    LegalDomain(
+        name="contract_dispute",
+        keywords=[
+            "breach of contract", "service agreement", "never delivered the service",
+            "took my money but never delivered", "failed to deliver service",
+            "violation of agreement",
+        ],
+        fact_requirements=[
+            FactRequirement(
+                key="written_agreement",
+                question="Was there a written contract, service agreement, or invoice for this service?",
+                priority=10,
+            ),
+            FactRequirement(
+                key="state",
+                question="Which state are you located in?",
+                priority=9,
+            ),
+            FactRequirement(
+                key="amount",
+                question="What was the amount paid for the service?",
+                priority=8,
+                required=False,
+            ),
+        ],
+        min_required_facts=2,
+    ),
     # ── Catch-all / general ──────────────────────────────────
     LegalDomain(
         name="general",
@@ -325,6 +391,31 @@ def extract_facts(
     match = _DURATION_PATTERN.search(text_lower)
     if match:
         facts["duration"] = f"{match.group(1)} {match.group(2).lower()}"
+
+    # ── Amount extraction ─────────────────────────────────────
+    amount_match = re.search(
+        r"(?:(?:₹|rs\.?|inr)\s*)?(\d+(?:,\d+)*(?:\.\d+)?\s*(?:lakhs?|crores?|k)?)",
+        text_lower,
+    )
+    if amount_match and any(c.isdigit() for c in amount_match.group(1)):
+        # Avoid picking up pure duration numbers like 3 months or simple counts
+        val = amount_match.group(1).strip()
+        if "lakh" in text_lower or "crore" in text_lower or "₹" in text or "rs" in text_lower or (len(val) >= 4 and val.replace(",", "").isdigit()):
+            facts["amount"] = val
+
+    # ── Transaction nature ────────────────────────────────────
+    if "loan" in text_lower:
+        facts["transaction_nature"] = "loan"
+    elif "gift" in text_lower:
+        facts["transaction_nature"] = "gift"
+    elif "investment" in text_lower:
+        facts["transaction_nature"] = "investment"
+    elif "advance" in text_lower:
+        facts["transaction_nature"] = "advance"
+
+    # ── Urgency indicators ────────────────────────────────────
+    if any(u in text_lower for u in ["court notice", "hearing next week", "hearing tomorrow", "arrest warrant", "urgent"]):
+        facts["urgency"] = "urgent"
 
     # ── Boolean answers to last question ──────────────────────
     if last_question_key:
