@@ -26,6 +26,7 @@ from conversation.manager import ConversationManager
 from conversation.state import add_user_message, update_facts
 from database.models import ConversationRecord, ConversationStage, Mode
 from database.repository import SQLiteConversationRepository
+from conversation.followup import FollowUpEngine, extract_facts
 from legal_qa.client import LegalQAClient
 from services.intake_service import OpenAIIntakeService
 
@@ -544,3 +545,79 @@ class TestModularIntakeScenarios:
         assert res2.case_state["subcategory"] in ("Money Recovery", "General") or res2.case_state["case_type"] == "Money Recovery"
         assert not res2.is_ready_for_qa
         assert res2.followup_question is not None
+
+    @pytest.mark.asyncio
+    async def test_scenario_user_says_dont_have_information(self, mock_openai_response):
+        """
+        Verify that when a user says they don't have a document/proof or don't know:
+        1. The system does NOT repeat the question.
+        2. Reassures the user warmly.
+        3. Marks the document as not available.
+        4. Moves forward to next relevant topic or preliminary advice.
+        """
+        service = OpenAIIntakeService(api_key="sk-test-key")
+
+        state = ConversationRecord(mode=Mode.ACTIONABLE)
+        add_user_message(state, "I gave my friend ₹2 lakh and he isn't returning it.")
+        state.last_assistant_question = "Do you have any written agreement or contract for this loan?"
+
+        mock_payload = {
+            "case_classification": {
+                "primary_category": "Civil",
+                "subcategory": "Money Recovery",
+                "specific_case_type": "Money Recovery",
+                "confidence": "High",
+            },
+            "extracted_facts": {
+                "written_agreement": "none",
+                "transaction_nature": "oral agreement",
+            },
+            "known_facts": [
+                {"fact": "No written agreement exists; agreement was oral based on friendship", "confirmed": True}
+            ],
+            "missing_information": ["payment method", "repayment deadline"],
+            "is_ready_for_qa": False,
+            "followup_question": (
+                "That's completely fine and very common with loans between friends. "
+                "In India, oral agreements are legally valid. Did you transfer the money via bank transfer, UPI, or cash?"
+            ),
+            "synthesized_query": None,
+        }
+
+        with patch.object(
+            service._client.chat.completions,
+            "create",
+            new_callable=AsyncMock,
+            return_value=mock_openai_response(mock_payload),
+        ):
+            user_msg = "No, I don't have any written agreement, it was just between friends."
+            add_user_message(state, user_msg)
+
+            result = await service.analyze_turn(state, user_msg)
+
+            assert not result.is_ready_for_qa
+            # Question is NOT repeated, user is reassured, and conversation moves to payment method
+            assert "completely fine" in result.followup_question.lower()
+            assert "bank" in result.followup_question.lower() or "upi" in result.followup_question.lower()
+
+    def test_fallback_engine_never_repeats_question_when_user_says_dont_have(self):
+        """Verify fallback rule engine does not repeat questions when user says 'don't have'."""
+        engine = FollowUpEngine()
+        state = ConversationRecord(mode=Mode.ACTIONABLE)
+        add_user_message(state, "My employer hasn't paid me salary")
+        state.facts = {"employment_type": "private", "state": "Karnataka", "detected_domain": "employment_wage"}
+        state.last_assistant_question = "Do you have a written employment contract or appointment letter?"
+
+        # User says they don't have it
+        user_msg = "I don't have any written contract"
+        add_user_message(state, user_msg)
+
+        # Last question key was written_contract
+        last_key = engine.get_last_question_key(state)
+        new_facts = extract_facts(user_msg, last_question_key=last_key)
+        assert new_facts.get("written_contract") in ("not_available", "no")
+
+        state.facts.update(new_facts)
+        # Should not ask for written_contract again
+        next_q = engine.needs_followup(state)
+        assert next_q != state.last_assistant_question

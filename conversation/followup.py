@@ -417,18 +417,28 @@ def extract_facts(
     if any(u in text_lower for u in ["court notice", "hearing next week", "hearing tomorrow", "arrest warrant", "urgent"]):
         facts["urgency"] = "urgent"
 
-    # ── Boolean answers to last question ──────────────────────
+    # ── Negative / unavailable phrases ────────────────────────
+    _NEGATIVE_PHRASES = [
+        "don't have", "dont have", "do not have", "don't know", "dont know",
+        "do not know", "not sure", "no idea", "no document", "no proof",
+        "no written", "nothing", "not available", "no agreement", "none",
+        "cannot find", "can't find", "lost it", "no receipt",
+    ]
+
+    # ── Boolean & short answers to last question ──────────────
     if last_question_key:
         if text_lower in _BOOLEAN_YES:
             facts[last_question_key] = "yes"
         elif text_lower in _BOOLEAN_NO:
             facts[last_question_key] = "no"
+        elif any(p in text_lower for p in _NEGATIVE_PHRASES):
+            facts[last_question_key] = "not_available"
         # If it's a short answer and we asked a specific question,
         # store the raw answer under that key.
-        elif len(text_lower.split()) <= 5 and last_question_key not in facts:
+        elif len(text_lower.split()) <= 8 and last_question_key not in facts:
             # Only if we haven't extracted a structured value already
             already_matched = any(k in facts for k in [
-                "state", "employment_type", "duration"
+                "state", "employment_type", "duration", "amount"
             ])
             if not already_matched:
                 facts[last_question_key] = text.strip()
@@ -543,15 +553,25 @@ class FollowUpEngine:
         if "detected_domain" not in state.facts:
             state.facts["detected_domain"] = domain.name
 
-        # Count how many *required* facts we already have
+        # Count how many *required* facts we already have (including not_available/not_provided)
         collected_required = 0
         for req in domain.fact_requirements:
             if req.required and req.key in state.facts:
                 collected_required += 1
 
-        # If we have enough, proceed to Legal_QA
-        if collected_required >= domain.min_required_facts:
+        # If we have enough or user answered multiple turns, proceed to Legal_QA
+        user_turn_count = sum(
+            1 for m in state.messages if m.role.value == "user"
+        )
+        if collected_required >= domain.min_required_facts or user_turn_count >= 3:
             return None
+
+        # If the assistant already asked a question last turn and user didn't provide that key,
+        # mark it as not_provided to prevent ever asking the exact same question twice
+        if state.last_assistant_question:
+            for req in domain.fact_requirements:
+                if req.question == state.last_assistant_question and req.key not in state.facts:
+                    state.facts[req.key] = "not_provided"
 
         # Find the highest-priority missing required fact
         missing = [
@@ -561,8 +581,9 @@ class FollowUpEngine:
         ]
         missing.sort(key=lambda r: r.priority, reverse=True)
 
-        if missing:
-            return missing[0].question
+        for req in missing:
+            if req.question != state.last_assistant_question:
+                return req.question
 
         return None
 
