@@ -2,15 +2,15 @@
 Response formatting utilities.
 
 Transforms internal data structures into the JSON shapes expected
-by the frontend.  Keeps formatting logic out of the API routes
-and conversation manager.
+by the frontend. Exposes compact structured case state for UI display
+without exposing internal raw chain-of-thought.
 """
 
 from __future__ import annotations
 
 from typing import Any
 
-from database.models import ConversationRecord, MessageRole
+from database.models import ConversationRecord
 
 
 def format_conversation_response(
@@ -18,14 +18,45 @@ def format_conversation_response(
 ) -> dict[str, Any]:
     """
     Format a full conversation record for ``GET /api/conversations/{id}``.
-
-    Returns a dict that can be directly serialised to JSON.
+    Returns raw messages, structured CaseState, and LegalAssessment as separate objects.
     """
+    case_state = record.facts.get("case_state")
+    compact_state = None
+
+    if isinstance(case_state, dict):
+        raw_issues = case_state.get("issues", [])
+        active_issues = []
+        for i in raw_issues:
+            if isinstance(i, dict) and i.get("status") != "ruled_out":
+                active_issues.append(i.get("issue"))
+            elif isinstance(i, str):
+                active_issues.append(i)
+
+        if not active_issues and case_state.get("case_type"):
+            active_issues = [case_state["case_type"]]
+
+        financial_info = case_state.get("financial") or {}
+        amt = financial_info.get("amount_raw") if isinstance(financial_info, dict) else None
+        if not amt and isinstance(financial_info, dict) and financial_info.get("amount"):
+            amt = f"₹{financial_info['amount']:,.0f}"
+
+        compact_state = {
+            "domain": case_state.get("case_domain") or case_state.get("subcategory") or case_state.get("primary_category"),
+            "issues": active_issues,
+            "jurisdiction": case_state.get("jurisdiction"),
+            "urgency": case_state.get("urgency") or (case_state.get("risk", {}).get("level") if isinstance(case_state.get("risk"), dict) else "normal"),
+            "amount": amt,
+            "evidence_count": len(case_state.get("evidence", [])),
+            "user_goal": case_state.get("user_goal"),
+        }
+
     return {
         "conversation_id": record.conversation_id,
         "mode": record.mode.value,
         "stage": record.stage.value,
-        "case_state": record.facts.get("case_state"),
+        "case_state": case_state,
+        "compact_case_state": compact_state,
+        "legal_assessment": record.facts.get("legal_assessment"),
         "facts": record.facts,
         "messages": [
             {

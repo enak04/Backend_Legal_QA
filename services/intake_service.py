@@ -1,12 +1,24 @@
 """
-Intake service — OpenAI-powered modular conversational legal case intake.
+Intake service — OpenAI-powered universal conversational legal case intake.
 
-Implements a dynamic, hierarchical case intake pipeline:
-  1. Identifies candidate legal case types from the central registry
-  2. Dynamically injects only relevant case module(s) into prompt context
-  3. Maintains structured case state across multi-turn conversations
-  4. Selects the single best next question, answers user interruptions,
-     and provides conversational summaries once sufficient info is gathered.
+Implements the general-purpose legal intake, triage, and action-planning pipeline:
+  User message
+  ↓
+  Fact extraction & distinction (facts vs hypotheses)
+  ↓
+  Universal Case State
+  ↓
+  Issue identification (multiple simultaneous issues)
+  ↓
+  Risk/urgency detection
+  ↓
+  Determine legally important missing facts
+  ↓
+  Ask the single highest-value question with 'Why I'm asking this'
+  ↓
+  Update Case State & repeat only when necessary
+  ↓
+  Synthesize contextual query for legal research & action planning
 """
 
 from __future__ import annotations
@@ -14,16 +26,35 @@ from __future__ import annotations
 import json
 import logging
 import re
+import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
 from openai import AsyncOpenAI
 
-from conversation.cases.models import CaseModule, StructuredCaseState
+from conversation.cases.domains import domain_registry
+from conversation.cases.models import (
+    ActionTaken,
+    CaseModule,
+    ConfidenceScores,
+    Dates,
+    EvidenceItem,
+    FactItem,
+    Financial,
+    Jurisdiction,
+    LegalAssessment,
+    LegalIssue,
+    MissingFact,
+    Party,
+    Risk,
+    StructuredCaseState,
+    UniversalCaseState,
+)
 from conversation.cases.registry import CaseRegistry, case_registry
 from conversation.followup import FollowUpEngine, extract_facts
 from database.models import ConversationRecord, MessageRole, Mode
 from legal_qa.query_builder import QueryBuilder
+from services.risk_engine import risk_engine
 
 logger = logging.getLogger(__name__)
 
@@ -40,102 +71,60 @@ class IntakeAnalysisResult:
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# Base Conversational Intake Instructions
+# Universal Legal Intake System Prompt
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-INTAKE_BASE_SYSTEM_PROMPT = """You are an intelligent, empathetic, and comprehensive Legal AI Assistant for an Indian Legal Assistance system.
-You are capable of handling ANY legal question or scenario across the ENTIRE spectrum of Indian law (civil, criminal, constitutional, family, commercial, consumer, labor, tenancy, cyber, taxation, and general legal inquiries).
+INTAKE_BASE_SYSTEM_PROMPT = """You are an intelligent, empathetic, and comprehensive Legal AI Advisor for an Indian Legal Assistance system.
+You handle ANY legal matter across the ENTIRE spectrum of Indian law (civil, criminal, constitutional, family, commercial, consumer, labor, tenancy, cyber, taxation, and administrative law).
 
-### 1. BROAD SPECTRUM VERSATILITY (CRITICAL):
-- **Not a Narrow Case-by-Case Form**: Do NOT treat conversations as rigid, narrow case silos where you must check off a fixed list of questions.
-- **Universal Scope**: Users may ask broad questions, conceptual legal questions, procedural questions, or share complex overlapping situations.
-- **Provide Legal Value in Every Response**:
-  - When the user asks a question or shares their situation, DO NOT just ask a counter-question.
-  - Provide immediate, substantive legal clarity first—briefly explain the applicable law, rights, or legal position under Indian statutes (e.g., Industrial Disputes Act, Indian Contract Act, Negotiable Instruments Act, Consumer Protection Act, etc.).
-  - Then, if more specifics are needed for tailored action, ask ONE natural, relevant follow-up question.
-- **Adapt to Broad vs. Specific**:
-  - If the user asks a general question (e.g., "What are my rights if my company fires me?", "Can police arrest without warrant?"): Answer the legal question clearly and comprehensively!
-  - If the user describes a dispute: Acknowledge their rights, outline the legal framework, and ask about their specific situation naturally.
+### 1. CORE ARCHITECTURAL PRINCIPLE:
+- You are NOT a rigid questionnaire or a fixed checklist.
+- You must dynamically determine which questions matter for the specific case based on LEGAL INFORMATION VALUE:
+  * Does a missing fact materially change:
+    1. Applicable law or statutory regime? (e.g. private company vs government; commercial contract vs consumer dispute)
+    2. Jurisdiction or forum? (State/City determining Rent Controller vs Civil Court vs High Court)
+    3. Available remedies? (Injunction vs damages vs criminal FIR)
+    4. Limitation period or deadline? (e.g. 30 days under NI Act; 2 years under Consumer Protection Act; 6 months under Specific Relief Act)
+    5. Urgency or emergency relief? (Ongoing fraud, physical danger, lockout)
+    6. Evidence requirements? (Written agreement, electronic logs, notice)
+- Avoid asking questions whose answers would not materially change the legal analysis.
 
-### 2. CRITICAL IDENTITY & STRICTLY PROHIBITED RESPONSES:
-- **YOU ARE THE LEGAL COUNSEL/ASSISTANCE PLATFORM**:
-  - The user is here SPECIFICALLY to receive legal guidance, remedies, and action plans from this platform.
-  - **ABSOLUTELY FORBIDDEN**: NEVER tell the user to "seek legal advice", "consult an attorney", "contact a lawyer", or "seek professional advice". They are ALREADY here consulting this service!
-  - **ABSOLUTELY FORBIDDEN**: NEVER ask naive, passive, or patronizing questions like:
-    - ❌ "Have you considered reaching out to your employer for clarification?"
-    - ❌ "Have you tried talking to the other party to work it out?"
-    - ❌ "Have you considered seeking legal advice?"
-  - If someone was terminated, cheated, or faced default, they are here for concrete legal recourse. Address the legal aspects directly.
+### 2. FACTS VS LEGAL CONCLUSIONS & HYPOTHESES (CRITICAL):
+- Never treat an inferred legal conclusion as a user-provided fact!
+  * If user says: "My company fired me without reason."
+    - User-provided fact: "user was terminated without reasons given" (source: user, is_explicit: true)
+    - Legal issue / hypothesis: "possible wrongful termination" (status: hypothesis, confidence: 0.7)
+  * Clearly distinguish:
+    - User-provided facts (explicit statements)
+    - Extracted facts (dates, amounts, jurisdiction)
+    - Legal issues / hypotheses (subject to verification of documents)
+    - Actions already taken (e.g. filed FIR, contacted bank)
+    - Evidence items
 
-### 3. CONVERSATIONAL FLOW & NEVER FORCE INFORMATION:
-- **Never Interrogate or Badger**:
-  - If the user says "I don't know", "I don't have it", "No proof", "He just said you are fired nothing else", "No clauses", or gives a short/curt reply:
-    - **NEVER repeat, rephrase, or probe the same topic again.**
-    - Accept it as a definitive, established fact (e.g., "No verbal agreements or discussions occurred; termination was unilateral and oral", "No termination clauses exist in contract").
-    - Remove the item permanently from `missing_information`—it is not missing, it simply does not exist.
-    - Reassure the user warmly and acknowledge the legal implications under Indian law.
-    - Move forward immediately to a new aspect or proceed to remedies.
-- **Single Best Next Question & No Duplicates**:
-  - Ask at most ONE natural question at a time.
-  - **STRICTLY PROHIBITED**: NEVER ask any question that has already been asked, rephrase an asked question, or re-open an already answered topic.
-  - If the user pivots, shares an emotional reaction, or reports serious violations (e.g., racial discrimination, harassment, sudden eviction, or withholding of wages):
-    - Acknowledge and validate the legal significance of that violation under Indian law (e.g. Karnataka Shops & Establishments Act, 1961 Section 39; Payment of Wages Act; Constitutional protections).
-    - Do NOT ignore it or jump back to an irrelevant standard question.
+### 3. DYNAMIC ISSUE SPOTTER (MULTIPLE SIMULTANEOUS ISSUES):
+- Spot multiple simultaneous issues from a single situation:
+  * "My employer fired me and hasn't paid me for three months." → [unpaid wages, termination, possible wrongful termination]
+  * "My landlord changed the locks and kept my deposit." → [possession / eviction dispute, security deposit recovery]
+  * "Someone transferred ₹80,000 from my bank account without permission." → [unauthorized financial transaction, cyber fraud, banking dispute]
 
-### 4. CONVERSATION MODES & RESOLUTION:
-- **ACTIONABLE MODE (Conversational Legal Intake & Remedies)**:
-  - In this mode, the user chose to have a CONVERSATION.
-  - Your primary goal is interactive conversational discovery: understanding the scenario, explaining rights/statutes, clarifying missing critical facts, and helping them formulate an action plan.
-  - In initial turns (Turns 1-3), `is_ready_for_qa` MUST BE `false` as long as key facts remain unclarified.
-  - In `followup_question`, ALWAYS provide immediate substantive legal context first (reassurance, rights under Indian law), and then ask ONE natural, relevant next question.
-  - **TURN CAP & RESOLUTION (CRITICAL)**: 
-    - Do NOT keep asking questions indefinitely! Once the user has answered 3 to 4 turns, or once the core facts (who, what, state/jurisdiction, amount/unpaid wages, and termination circumstance) are established:
-    - STOP asking further questions.
-    - Set `is_ready_for_qa = true`.
-    - Synthesize a comprehensive query detailing all facts, timeline, statutory violations, and desired relief to deliver the complete actionable legal remedy.
-  - Also set `is_ready_for_qa = true` whenever the user explicitly states they have provided all info or asks for the final advice/remedy.
-- **INFORMATIVE MODE**:
-  - Explain legal concepts or sections. Set `is_ready_for_qa = true` if the question is reasonably clear.
-- **READABLE MODE**:
-  - Simplified plain-language legal explanation. Always set `is_ready_for_qa = true`.
+### 4. RISK & URGENCY DETECTION:
+- Identify high-risk situations:
+  * Imminent court/statutory deadline, arrest/detention, physical danger, eviction/lockout, ongoing financial fraud, destruction of evidence.
+  * If an urgent risk is detected, acknowledge it warmly and explain the immediate emergency step before lengthy questioning.
 
-### 5. LAWYER-GRADE TONE & DIRECT SECOND-PERSON ADDRESS (CRITICAL):
-- **Address the Client Directly**:
-  - ALWAYS use direct second-person address ("You", "Your employer", "Your rights", "Your contract").
-  - NEVER speak in the third person (NEVER say "the user", "the client", or "the employee").
-- **Structure of Every Response in `followup_question`**:
-  - Speak with the empathy, gravitas, and strategic clarity of an expert legal advocate.
-  - In each turn:
-    1. **Empathetic Acknowledgment & Reassurance**: Validate their situation warmly.
-    2. **Substantive Legal Framework & Rights**: Explicitly explain the relevant Indian statutes, protections, or legal positions (e.g. Karnataka Shops & Establishments Act, Payment of Wages Act, NI Act Section 138, BNSS/CrPC, Consumer Protection Act 2019). Explain *why* certain details matter.
-    3. **One Focused Question**: Ask ONE clear, natural question to clarify crucial missing facts, evidence (contracts, payslips, bank statements, notices), or their desired remedy.
-
-### 6. HUMAN-CENTRIC & IMPERFECT INPUT UNDERSTANDING (CRITICAL):
-- **Understand that it is a Human Talking and Messages May Not Be Perfect**:
-  - The person consulting you is a human experiencing real-world stress or legal trouble, not a lawyer or a machine.
-  - Their messages may contain typos, colloquialisms, emotional venting, or incomplete fragments (e.g., "Karnataka and 3 months", "he just said fired nothing else", "no clauses written", "they scammed me", "blocked my number", "paid rent by upi want him out of my life").
-  - **NEVER penalize, critique, or get stuck on short, informal, emotional, or imperfect replies.**
-  - **A Real Lawyer Connects the Dots**:
-    - If a client says *"He just said you are fired nothing else"*: Recognize immediately that no written termination notice, no show-cause letter, and no verbal discussions took place. That makes the termination arbitrary and without due process under Indian labor laws!
-    - If a client says *"No clauses written"*: Recognize that the contract is silent on notice periods and termination procedures, meaning statutory rules and default protections govern their rights.
-    - If a client says *"Karnataka and 3 months"*: Immediately extract that the matter is under Karnataka jurisdiction and arrears amount to 3 months.
-    - If a client says *"Paid rent on time via UPI every month"*: Immediately extract that they have clear digital proof of tenancy and absence of default.
-    - If a client says *"Blocked my number"*: Recognize deliberate evasion or bad-faith refusal to communicate.
-  - **Humans Do Not Speak Like Checklists**:
-    - Clients frequently answer only one part of a question, or pivot to what is burning in their mind (e.g. sharing proof of payment or expressing their urgent fear).
-    - **DO NOT repeat the question just because the client didn't answer it directly.**
-    - Acknowledge what they *did* share, extract whatever legal fact is implied, and move the case forward.
-  - **Never Demand Legal Jargon**: If they describe being cheated or having a bounced cheque, classify the offense under the relevant law (Section 138 of NI Act, BNS / IPC for cheating) without asking them to name the legal statute.
-  - **Client Stating Their Goal or Asking for Relief = Ready for Solutions**:
-    - When a client says *"I want to stop him from evicting me"*, *"I want to recover my salary"*, *"What legal action can I take?"*, or *"Outline the steps I should take"*, they are explicitly asking for legal remedies.
-    - Transition immediately: set `is_ready_for_qa = true` to deliver full, actionable legal remedies.
+### 5. CONVERSATION EFFICIENCY & QUESTION FORMULATION:
+- Ask ONE focused question at a time.
+- Include a concise "Why this matters" explanation when appropriate so the client understands the legal purpose.
+- NEVER ask about information already established in previous turns or facts!
+- Once sufficient core facts are known to provide a useful legal answer, STOP asking questions and set `is_ready_for_qa = true`.
+- Always address the client directly in second person ("You", "Your employer", "Your rights").
 """
 
 
 class OpenAIIntakeService:
     """
-    Intelligent conversational intake engine powered by OpenAI with
-    modular hierarchical case routing and deterministic rule-based fallback.
+    Universal conversational legal intake engine powered by OpenAI with
+    deterministic rule-based fallback.
     """
 
     def __init__(
@@ -158,7 +147,7 @@ class OpenAIIntakeService:
 
     @property
     def is_configured(self) -> bool:
-        """Return True if OpenAI API client is configured."""
+        """True if an OpenAI API key is available."""
         return self._client is not None
 
     async def analyze_turn(
@@ -166,48 +155,79 @@ class OpenAIIntakeService:
         state: ConversationRecord,
         latest_user_message: str,
     ) -> IntakeAnalysisResult:
-        """
-        Analyze the conversation turn to extract facts, route to modular case
-        types, maintain structured state, and decide next action.
-        """
-        if self.is_configured:
-            try:
-                return await self._analyze_with_openai(state, latest_user_message)
-            except Exception as exc:
-                logger.warning(
-                    "OpenAI intake analysis failed (%s); falling back to rule engine.",
-                    exc,
-                )
+        """Analyze a conversation turn using UniversalCaseState and dynamic ranking."""
+        if not self.is_configured:
+            return self._fallback_analyze(state, latest_user_message)
 
-        return self._analyze_with_fallback(state, latest_user_message)
+        try:
+            return await self._analyze_with_openai(state, latest_user_message)
+        except Exception as exc:
+            logger.warning(
+                "OpenAI intake analysis failed (%s); falling back to rule engine.",
+                exc,
+            )
+            return self._fallback_analyze(state, latest_user_message)
+
+    def _fallback_analyze(
+        self,
+        state: ConversationRecord,
+        latest_user_message: str,
+    ) -> IntakeAnalysisResult:
+        """Deterministic fallback analysis using FollowUpEngine."""
+        case_state_raw = state.facts.get("case_state")
+        if isinstance(case_state_raw, UniversalCaseState):
+            case_state = case_state_raw
+        elif isinstance(case_state_raw, dict):
+            case_state = UniversalCaseState(**case_state_raw)
+        else:
+            case_state = UniversalCaseState()
+
+        # Update universal case state
+        user_turn_count = sum(1 for m in state.messages if m.role == MessageRole.USER)
+        self._fallback_engine.update_case_state_from_text(case_state, latest_user_message, user_turn_count)
+
+        extracted = extract_facts(latest_user_message)
+        if case_state.jurisdiction.state:
+            extracted["state"] = case_state.jurisdiction.state
+        if case_state.case_domain:
+            extracted["detected_domain"] = case_state.case_domain
+
+        is_ready = self._fallback_engine.is_sufficient_information(state, case_state)
+        followup = None
+        synthesized_query = None
+
+        if is_ready:
+            temp_state = state.model_copy(deep=True)
+            temp_state.facts.update(extracted)
+            temp_state.facts["case_state"] = case_state.model_dump()
+            synthesized_query = self._query_builder.build(temp_state)
+        else:
+            followup = self._fallback_engine.select_highest_value_question(case_state)
+
+        return IntakeAnalysisResult(
+            extracted_facts=extracted,
+            is_ready_for_qa=is_ready,
+            followup_question=followup,
+            synthesized_query=synthesized_query,
+            case_state=case_state.model_dump(),
+        )
 
     async def _analyze_with_openai(
         self,
         state: ConversationRecord,
         latest_user_message: str,
     ) -> IntakeAnalysisResult:
-        """Call OpenAI with dynamically loaded case module instructions."""
-        assert self._client is not None
-
-        # 1. Identify Candidate Case Modules from conversation text & state
-        all_user_messages = [
-            m.content for m in state.messages if m.role == MessageRole.USER
-        ]
-        all_user_messages.append(latest_user_message)
-        combined_text = " ".join(all_user_messages)
-
+        """Perform OpenAI-powered universal fact extraction, issue spotting, and question ranking."""
         existing_case_state = state.facts.get("case_state") or {}
+
+        # Retrieve relevant candidate taxonomy modules for context
         candidate_modules = self._registry.find_candidate_modules(
-            text=combined_text,
+            text=latest_user_message,
             current_state=existing_case_state,
-            limit=3,
+            limit=2,
         )
 
-        # 2. Build Dynamic Prompt
-        system_prompt = self._build_dynamic_prompt(
-            candidate_modules=candidate_modules,
-            mode=state.mode,
-        )
+        system_prompt = self._build_dynamic_prompt(candidate_modules, state.mode)
 
         conversation_history = []
         for msg in state.messages:
@@ -219,21 +239,6 @@ class OpenAIIntakeService:
         ]
         user_turn_count = sum(1 for m in state.messages if m.role == MessageRole.USER)
 
-        if state.mode == Mode.ACTIONABLE:
-            mode_instruction = (
-                f"5. ACTIVE MODE IS ACTIONABLE (CONVERSATIONAL INTAKE, User Turn #{user_turn_count}):\n"
-                "- REMEMBER: THE CLIENT IS A HUMAN TALKING, NOT A MACHINE OR LAWYER. Their messages may not be perfect—they may use fragments, typos, or emotional expressions (e.g., 'paid rent by UPI every month, want him to stop', 'he just said fired nothing else', 'karnataka and 3 months').\n"
-                "  - Connect the dots from what they said: infer legal implications without asking them to clarify minor details or restate themselves.\n"
-                "  - If the client did not answer a specific previous question and instead spoke about something else (e.g. payment history or desired remedy), NEVER repeat the previous question. Pivot to their stated point.\n"
-                "- ABSOLUTELY FORBIDDEN: You must NEVER repeat, rephrase, or ask about any topic already covered in 'previous_assistant_questions': "
-                f"{json.dumps(previous_assistant_questions)}.\n"
-                "- CLIENT GOAL / DESIRED REMEDY = READY FOR RESOLUTION: If the client stated their goal (e.g. 'I want to stop him', 'I want my deposit protected', 'recover my salary', 'tell me what to do'), or if User Turn >= 3 and core facts are established, "
-                "STOP asking questions! Set is_ready_for_qa = true and synthesize the full legal query for complete actionable remedies.\n"
-                "- Only if User Turn < 3, no goal was just stated, and critical facts are genuinely missing, ask ONE single new question on an unasked topic."
-            )
-        else:
-            mode_instruction = f"5. ACTIVE MODE IS {state.mode.value.upper()}."
-
         user_prompt_content = {
             "mode": state.mode.value,
             "user_turn_number": user_turn_count,
@@ -244,19 +249,15 @@ class OpenAIIntakeService:
             "previous_assistant_questions": previous_assistant_questions,
             "conversation_history": conversation_history,
             "latest_user_message": latest_user_message,
-            "turn_instructions": (
-                "CRITICAL INSTRUCTIONS:\n"
-                "1. BROAD SPECTRUM OF QUESTIONS: This system handles ANY legal question across the entire spectrum of Indian law (general legal questions, concepts, rights, procedures, or dispute cases). "
-                "ALWAYS provide immediate substantive legal clarity, rights, and relevant provisions first before asking any question.\n"
-                "2. YOU ARE THE LEGAL PLATFORM. NEVER tell the user to 'seek legal advice', 'consult an attorney', or 'hire a lawyer'.\n"
-                "3. NEVER ask naive, patronizing questions like 'Have you considered asking your employer/other party for clarification?'.\n"
-                "4. If the user indicates they don't have a document, don't know a detail, or replied with an off-topic/negative response, "
-                "DO NOT repeat or rephrase the previous question. Reassure the user, record it as unavailable, and move forward.\n"
-                f"{mode_instruction}"
+            "guidelines": (
+                "1. Distinguish facts vs legal hypotheses.\n"
+                "2. Spot all legal issues (multiple simultaneous issues).\n"
+                "3. Rank missing facts by legal information value.\n"
+                "4. If Turn >= 3 or sufficient facts are established to advise on legal options, set is_ready_for_qa = true.\n"
+                "5. Never ask about information already established."
             ),
         }
 
-        # 3. Call OpenAI Chat Completions with JSON response format
         response = await self._client.chat.completions.create(
             model=self._model,
             temperature=0.2,
@@ -266,7 +267,7 @@ class OpenAIIntakeService:
                 {
                     "role": "user",
                     "content": (
-                        "Analyze this conversation turn and output valid JSON:\n"
+                        "Analyze this conversation turn and output valid JSON according to schema:\n"
                         f"{json.dumps(user_prompt_content, indent=2)}"
                     ),
                 },
@@ -283,117 +284,115 @@ class OpenAIIntakeService:
         candidate_modules: list[CaseModule],
         mode: Mode,
     ) -> str:
-        """Assemble base instructions + only relevant case modules + schema."""
+        """Assemble universal instructions and schema."""
         prompt_parts = [INTAKE_BASE_SYSTEM_PROMPT]
 
-        # Ingest only the relevant case module definitions as background reference
         if candidate_modules:
-            prompt_parts.append(
-                "\n### RELEVANT LEGAL DOMAIN REFERENCE CONTEXT (NOT a questionnaire or checklist):\n"
-                "(Use these reference domains to understand legal elements and rights under Indian law. "
-                "Do NOT quiz or interrogate the user with these fields. Answer the user's questions first and converse naturally.)"
-            )
+            prompt_parts.append("\n### REFERENCE DOMAIN PERSPECTIVE (For Context Only):")
             for mod in candidate_modules:
-                mod_lines = [
-                    f"\n#### Case Type: {mod.category} -> {mod.subcategory} -> {mod.case_type}",
-                    f"Description: {mod.description}",
-                ]
-                if mod.priority_info:
-                    mod_lines.append(
-                        f"Priority Information to Clarify: {', '.join(mod.priority_info)}"
-                    )
-                if mod.relevant_facts:
-                    mod_lines.append(
-                        f"Relevant Facts to Understand: {', '.join(mod.relevant_facts)}"
-                    )
-                if mod.potential_evidence:
-                    mod_lines.append(
-                        f"Potential Evidence: {', '.join(mod.potential_evidence)}"
-                    )
-                if mod.urgency_indicators:
-                    mod_lines.append(
-                        f"Urgency Indicators: {', '.join(mod.urgency_indicators)}"
-                    )
-                if mod.related_modules:
-                    mod_lines.append(
-                        f"Related Case Modules: {', '.join(mod.related_modules)}"
-                    )
-                prompt_parts.append("\n".join(mod_lines))
+                prompt_parts.append(
+                    f"- **{mod.case_type}** ({mod.subcategory}): {mod.description}\n"
+                    f"  Key Facts: {', '.join(mod.relevant_facts[:4])}"
+                )
 
         prompt_parts.append(
             """
 ### Output JSON Schema:
 Respond ONLY with a valid JSON object matching this structure:
 {
-  "case_classification": {
-    "primary_category": "Civil | Criminal | Family | Other",
-    "subcategory": "string",
-    "specific_case_type": "string",
-    "confidence": "High | Medium | Low",
-    "possible_alternatives": ["string"],
-    "related_case_types": ["string"]
-  },
-  "urgency": "normal | potentially_urgent | urgent",
-  "parties": {
-    "user": "string or null",
-    "opposing_party": "string or null",
-    "other_parties": "string or null"
-  },
-  "extracted_facts": {
-    "detected_domain": "string (e.g. employment_wage, property_land, money_recovery, criminal, etc.)",
+  "jurisdiction": {
+    "country": "India",
     "state": "string or null",
-    "core_issue": "string or null",
-    "amount": "string or null",
-    "duration_or_dates": "string or null",
-    "evidence_mentioned": "string or null"
+    "district": "string or null",
+    "city": "string or null"
   },
-  "known_facts": [
+  "case": {
+    "domain": "string (employment | consumer | property | criminal | cybercrime | family | contract | government | general)",
+    "issues": [
+      {
+        "issue": "string",
+        "domain": "string",
+        "status": "hypothesis | confirmed",
+        "confidence": float,
+        "applicable_laws": ["string"]
+      }
+    ],
+    "summary": "string"
+  },
+  "parties": [
     {
-      "fact": "string",
-      "source": "user_statement | documented | hearsay",
-      "confidence": "high | medium | low",
-      "confirmed": boolean,
-      "topic": "string"
+      "role": "string",
+      "name_or_description": "string",
+      "entity_type": "string or null"
     }
   ],
-  "timeline": [
-    {
-      "event": "string",
-      "date": "string or null",
-      "source": "string"
-    }
-  ],
+  "financial": {
+    "amount": float or null,
+    "amount_raw": "string or null",
+    "currency": "INR",
+    "loss": "string or null"
+  },
+  "dates": {
+    "incident_date": "string or null",
+    "notice_date": "string or null",
+    "deadline": "string or null",
+    "filing_date": "string or null"
+  },
   "evidence": [
     {
       "type": "string",
       "description": "string",
-      "availability": "available | mentioned | pending",
-      "supports": "string"
+      "source": "user_mentioned | uploaded | available | unavailable",
+      "relevance": "string",
+      "available": boolean
     }
   ],
-  "financial_info": {
-    "amount": "string or null",
-    "currency": "INR",
-    "loss": "string or null"
-  },
-  "communication": [
-    {
-      "details": "string",
-      "admissions": "string or null"
-    }
-  ],
-  "previous_actions": [
+  "actions_already_taken": [
     {
       "action": "string",
       "details": "string"
     }
   ],
   "user_goal": "string or null",
-  "missing_information": [
-    "string"
+  "risk": {
+    "level": "low | normal | potentially_urgent | urgent | emergency",
+    "flags": ["string"],
+    "reason": "string or null",
+    "recommended_emergency_action": "string or null"
+  },
+  "missing_facts": [
+    {
+      "fact_key": "string",
+      "description": "string",
+      "legal_importance": "HIGH | MEDIUM | LOW",
+      "reason": "string",
+      "sample_question": "string"
+    }
+  ],
+  "confidence": {
+    "facts": float,
+    "issue_classification": float,
+    "jurisdiction": float,
+    "legal_applicability": float,
+    "urgency": float
+  },
+  "extracted_facts": {
+    "detected_domain": "string",
+    "state": "string or null",
+    "core_issue": "string or null",
+    "amount": "string or null",
+    "duration_or_dates": "string or null"
+  },
+  "known_facts": [
+    {
+      "fact": "string",
+      "source": "user_statement | extracted | inferred",
+      "confidence": float,
+      "is_explicit": boolean
+    }
   ],
   "is_ready_for_qa": boolean,
-  "followup_question": "string or null (A complete, professional lawyer consultation response addressed directly to the client ('You'). First provide empathetic validation and substantive legal context citing relevant Indian statutory provisions and rights, then ask ONE natural, focused follow-up question to clarify documentation, evidence, or relief sought)",
+  "followup_question": "string or null (If asking a question, provide warm legal validation first, then ask ONE question with 'Why this matters')",
   "synthesized_query": "string or null"
 }
 """
@@ -405,73 +404,131 @@ Respond ONLY with a valid JSON object matching this structure:
         parsed: dict[str, Any],
         state: ConversationRecord,
     ) -> IntakeAnalysisResult:
-        """Extract structured case state and flat facts from OpenAI output."""
+        """Parse structured output into UniversalCaseState."""
         raw_facts = parsed.get("extracted_facts") or {}
-        # Clean null / empty strings
-        extracted_facts = {
-            k: v for k, v in raw_facts.items() if v is not None and v != ""
-        }
+        extracted_facts = {k: v for k, v in raw_facts.items() if v is not None and v != ""}
 
-        # Build structured case state
-        classification = parsed.get("case_classification") or {}
-        case_state = {
-            "primary_category": classification.get("primary_category"),
-            "subcategory": classification.get("subcategory"),
-            "case_type": classification.get("specific_case_type"),
-            "confidence": classification.get("confidence", "Medium"),
-            "possible_alternatives": classification.get(
-                "possible_alternatives", []
+        # Build UniversalCaseState
+        case_info = parsed.get("case") or {}
+        domain = case_info.get("domain") or extracted_facts.get("detected_domain") or "general"
+        extracted_facts["detected_domain"] = domain
+
+        jur_data = parsed.get("jurisdiction") or {}
+        if jur_data.get("state") and "state" not in extracted_facts:
+            extracted_facts["state"] = jur_data["state"]
+
+        raw_issues = case_info.get("issues", [])
+        issues_list = []
+        for i in raw_issues:
+            if isinstance(i, dict):
+                issues_list.append(
+                    LegalIssue(
+                        issue=i.get("issue", "Legal Dispute"),
+                        domain=i.get("domain", domain),
+                        status=i.get("status", "hypothesis"),
+                        confidence=float(i.get("confidence", 0.7)),
+                        applicable_laws=i.get("applicable_laws", []),
+                    )
+                )
+            elif isinstance(i, str):
+                issues_list.append(LegalIssue(issue=i, domain=domain))
+
+        risk_data = parsed.get("risk") or {}
+        urgency_val = parsed.get("urgency") or risk_data.get("level") or "normal"
+        risk_obj = Risk(
+            level=urgency_val,
+            flags=risk_data.get("flags", []),
+            reason=risk_data.get("reason"),
+            recommended_emergency_action=risk_data.get("recommended_emergency_action"),
+        )
+
+        # Check case_classification for legacy & test compatibility
+        cc = parsed.get("case_classification") or {}
+        primary_category = cc.get("primary_category") or parsed.get("primary_category") or domain.title()
+        subcategory = cc.get("subcategory") or parsed.get("subcategory")
+        case_type = cc.get("specific_case_type") or cc.get("case_type") or parsed.get("case_type") or (issues_list[0].issue if issues_list else "Legal Inquiry")
+
+        # Check parties format (dict vs list)
+        raw_parties = parsed.get("parties", [])
+        if isinstance(raw_parties, list):
+            parties_val = [Party(**p) if isinstance(p, dict) and "name" in p else p for p in raw_parties]
+        else:
+            parties_val = raw_parties
+
+        # Financial info
+        raw_fin_info = parsed.get("financial_info") or {}
+        fin_obj = Financial(**(parsed.get("financial") or {}))
+        if isinstance(raw_fin_info, dict) and raw_fin_info.get("amount"):
+            if not fin_obj.amount_raw:
+                fin_obj.amount_raw = raw_fin_info["amount"]
+        elif fin_obj.amount_raw:
+            raw_fin_info["amount"] = fin_obj.amount_raw
+
+        # Confidence (can be str or dict)
+        confidence_val = cc.get("confidence") or parsed.get("confidence")
+        if not confidence_val:
+            confidence_val = ConfidenceScores()
+        elif isinstance(confidence_val, dict):
+            try:
+                confidence_val = ConfidenceScores(**confidence_val)
+            except Exception:
+                pass
+
+        # Build clean UniversalCaseState
+        universal_state = UniversalCaseState(
+            jurisdiction=Jurisdiction(
+                country=jur_data.get("country", "India"),
+                state=jur_data.get("state") or extracted_facts.get("state"),
+                district=jur_data.get("district"),
+                city=jur_data.get("city"),
             ),
-            "related_case_types": classification.get("related_case_types", []),
-            "urgency": parsed.get("urgency", "normal"),
-            "parties": parsed.get("parties", {}),
-            "known_facts": parsed.get("known_facts", []),
-            "timeline": parsed.get("timeline", []),
-            "evidence": parsed.get("evidence", []),
-            "financial_info": parsed.get("financial_info", {}),
-            "communication": parsed.get("communication", []),
-            "previous_actions": parsed.get("previous_actions", []),
-            "user_goal": parsed.get("user_goal"),
-            "missing_information": parsed.get("missing_information", []),
-        }
-
-        # Ensure legacy detected_domain key exists in extracted_facts if not present
-        if "detected_domain" not in extracted_facts:
-            cat = classification.get("primary_category", "").lower()
-            subcat = classification.get("subcategory", "").lower()
-            case_type = classification.get("specific_case_type", "").lower()
-
-            if "employment" in subcat or "salary" in case_type:
-                extracted_facts["detected_domain"] = "employment_wage"
-            elif "property" in subcat or "land" in subcat or "tenant" in case_type:
-                extracted_facts["detected_domain"] = "property_land"
-            elif "money" in subcat or "money" in case_type:
-                extracted_facts["detected_domain"] = "money_recovery"
-            elif "criminal" in cat or "theft" in case_type or "fraud" in case_type:
-                extracted_facts["detected_domain"] = "criminal"
-            elif "family" in cat or "divorce" in case_type:
-                extracted_facts["detected_domain"] = "family_matrimonial"
-            elif "consumer" in subcat:
-                extracted_facts["detected_domain"] = "consumer"
-            else:
-                extracted_facts["detected_domain"] = "general"
+            case_domain=domain,
+            issues=issues_list,
+            summary=case_info.get("summary"),
+            financial=fin_obj,
+            financial_info=raw_fin_info,
+            dates=Dates(**(parsed.get("dates") or {})),
+            parties=parties_val,
+            evidence=[EvidenceItem(**e) for e in parsed.get("evidence", []) if isinstance(e, dict)],
+            actions_already_taken=[ActionTaken(**a) for a in parsed.get("actions_already_taken", []) if isinstance(a, dict)],
+            user_goal=parsed.get("user_goal"),
+            risk=risk_obj,
+            missing_facts=[MissingFact(**m) for m in parsed.get("missing_facts", []) if isinstance(m, dict)],
+            confidence=confidence_val,
+            known_facts=parsed.get("known_facts", []),
+            primary_category=primary_category,
+            subcategory=subcategory,
+            case_type=case_type,
+            urgency=urgency_val,
+            possible_alternatives=cc.get("possible_alternatives", parsed.get("possible_alternatives", [])),
+            related_case_types=cc.get("related_case_types", parsed.get("related_case_types", [])),
+            missing_information=parsed.get("missing_information", []),
+        )
 
         is_ready = bool(parsed.get("is_ready_for_qa", False))
         followup = parsed.get("followup_question")
         synthesized_query = parsed.get("synthesized_query")
 
-        # Mode safety enforcement
-        if state.mode == Mode.READABLE:
+        # Mode & Turn Safety Enforcement
+        if state.mode in (Mode.READABLE, Mode.INFORMATIVE):
             is_ready = True
             followup = None
         elif state.mode == Mode.ACTIONABLE:
-            # Actionable mode is a conversational intake flow.
-            user_msg_count = sum(
-                1 for m in state.messages if m.role == MessageRole.USER
-            )
-            has_missing = bool(case_state.get("missing_information"))
+            user_msg_count = sum(1 for m in state.messages if m.role == MessageRole.USER)
+            user_messages = [m.content.lower() for m in state.messages if m.role == MessageRole.USER]
+            latest_msg = user_messages[-1] if user_messages else ""
 
-            # Deduplication Guard: Check if followup question repeats any previous question
+            # Check if user demanded immediate advice
+            user_demanded_advice = any(
+                phrase in latest_msg
+                for phrase in [
+                    "skip question", "tell me what to do", "give me advice now",
+                    "no more question", "just advise", "remedy now", "legal advice now",
+                    "what should i do", "what are my options"
+                ]
+            )
+
+            # Deduplication Guard
             previous_questions_lower = [
                 m.content.strip().lower()
                 for m in state.messages
@@ -481,26 +538,14 @@ Respond ONLY with a valid JSON object matching this structure:
             is_duplicate = False
             if followup:
                 norm_followup = followup.strip().lower()
-
-                # Extract the main question clause (the part around or before '?')
                 q_clause = norm_followup
                 if "?" in norm_followup:
                     q_clause = norm_followup.split("?")[-2].split(".")[-1].strip()
 
-                # Extract significant content words from the question clause
                 stop_words = {
                     "what", "when", "where", "which", "who", "whom", "whose", "why", "how",
-                    "have", "has", "had", "having", "does", "done", "doing", "would", "should", "could",
-                    "your", "yours", "yourself", "yourselves", "you", "about", "above", "across",
-                    "after", "again", "against", "along", "already", "also", "although", "among",
-                    "around", "because", "before", "behind", "below", "beside", "between",
-                    "both", "during", "each", "either", "else", "enough", "even", "ever", "every",
-                    "from", "further", "here", "into", "just", "like", "more", "most", "much",
-                    "must", "near", "never", "only", "other", "our", "ours", "please", "regarding",
-                    "same", "some", "such", "than", "that", "their", "theirs", "them", "then",
-                    "there", "these", "they", "this", "those", "through", "under", "until",
-                    "very", "well", "were", "what", "with", "within", "without", "can", "may",
-                    "confirm", "considered", "strengthen", "case", "position"
+                    "have", "has", "had", "does", "would", "should", "could", "your", "you",
+                    "about", "please", "case", "state", "share", "tell"
                 }
                 q_words = {
                     re.sub(r"[^\w]", "", w)
@@ -509,180 +554,50 @@ Respond ONLY with a valid JSON object matching this structure:
                 }
 
                 for prev in previous_questions_lower:
-                    # 1. Full text overlap
                     if norm_followup in prev or prev in norm_followup:
                         is_duplicate = True
                         break
-
-                    # 2. Main question clause overlap
-                    if len(q_clause) > 15 and q_clause in prev:
-                        is_duplicate = True
-                        break
-
                     if "?" in prev:
                         prev_q_clause = prev.split("?")[-2].split(".")[-1].strip()
-                        if len(prev_q_clause) > 15 and (prev_q_clause in norm_followup or q_clause in prev_q_clause):
-                            is_duplicate = True
-                            break
-
                         prev_words = {
                             re.sub(r"[^\w]", "", w)
                             for w in prev_q_clause.split()
                             if len(w) > 3 and re.sub(r"[^\w]", "", w) not in stop_words
                         }
-                        shared_words = q_words & prev_words
-                        if len(shared_words) >= 3 or (q_words and len(shared_words) / len(q_words) >= 0.5):
+                        shared = q_words & prev_words
+                        if len(shared) >= 3 or (q_words and len(shared) / len(q_words) >= 0.5):
                             is_duplicate = True
                             break
-
-                    # 3. Key phrase overlap checks
-                    for kw in [
-                        "verbal agreement",
-                        "verbal discussions",
-                        "written contract",
-                        "appointment letter",
-                        "which state",
-                        "unpaid salary",
-                        "messages or emails",
-                        "documented any",
-                        "documenting any",
-                        "threats",
-                    ]:
-                        if kw in norm_followup and kw in prev:
-                            is_duplicate = True
-                            break
-                    if is_duplicate:
-                        break
 
             if is_duplicate:
-                logger.warning(
-                    "Detected duplicate follow-up question: '%s'. Overriding duplicate.",
-                    followup,
-                )
+                logger.warning("Duplicate question detected: '%s'. Overriding.", followup)
                 if user_msg_count >= 2:
-                    # User has answered across 2+ turns; finish intake and provide remedies!
                     is_ready = True
                     followup = None
                 else:
-                    followup = (
-                        "Understood. What specific relief or outcome are you looking to achieve "
-                        "(e.g., recovering your unpaid salary, seeking severance compensation, or sending a formal legal notice)?"
-                    )
+                    followup = self._fallback_engine.select_highest_value_question(universal_state)
                     is_ready = False
-            elif user_msg_count >= 4:
-                # Turn cap: after 4 user messages, conclude intake to prevent interrogation loops
+
+            elif user_demanded_advice or user_msg_count >= 3:
+                # Turn cap / user request: deliver actionable legal guidance!
                 is_ready = True
                 followup = None
-            elif followup:
-                is_ready = False
-            elif user_msg_count < 3 and has_missing:
-                is_ready = False
-                followup = (
-                    "Could you share a few more details regarding what happened "
-                    "so I can provide the most accurate legal guidance?"
-                )
 
         if is_ready:
             followup = None
             if not synthesized_query:
                 temp_state = state.model_copy(deep=True)
                 temp_state.facts.update(extracted_facts)
-                temp_state.facts["case_state"] = case_state
+                temp_state.facts["case_state"] = universal_state.model_dump()
                 synthesized_query = self._query_builder.build(temp_state)
-        else:
-            if not followup:
-                followup = (
-                    "Could you share a few more details regarding what happened "
-                    "so I can provide the most accurate legal guidance?"
-                )
 
         return IntakeAnalysisResult(
             extracted_facts=extracted_facts,
             is_ready_for_qa=is_ready,
             followup_question=followup,
             synthesized_query=synthesized_query,
-            case_state=case_state,
+            case_state=universal_state.model_dump(),
         )
 
-    def _analyze_with_fallback(
-        self,
-        state: ConversationRecord,
-        latest_user_message: str,
-    ) -> IntakeAnalysisResult:
-        """Deterministic rule-based fallback using CaseRegistry."""
-        last_key = self._fallback_engine.get_last_question_key(state)
-        new_facts = extract_facts(
-            latest_user_message, last_question_key=last_key
-        )
-
-        all_user_messages = [
-            m.content for m in state.messages if m.role == MessageRole.USER
-        ]
-        all_user_messages.append(latest_user_message)
-        combined_text = " ".join(all_user_messages)
-
-        existing_case_state = state.facts.get("case_state") or {}
-        candidate_modules = self._registry.find_candidate_modules(
-            text=combined_text,
-            current_state=existing_case_state,
-            limit=1,
-        )
-
-        # Build fallback structured state
-        active_mod = candidate_modules[0] if candidate_modules else None
-        urgency = "normal"
-        lower_msg = latest_user_message.lower()
-        if any(
-            w in lower_msg
-            for w in [
-                "court notice",
-                "hearing is next week",
-                "hearing next week",
-                "hearing tomorrow",
-                "arrest",
-                "summons",
-            ]
-        ):
-            urgency = "urgent"
-
-        case_state = {
-            "primary_category": active_mod.category if active_mod else "Civil",
-            "subcategory": active_mod.subcategory if active_mod else "General",
-            "case_type": (
-                active_mod.case_type
-                if active_mod
-                else "Unknown / Needs Further Classification"
-            ),
-            "confidence": "Medium",
-            "urgency": urgency,
-            "possible_alternatives": [],
-            "related_case_types": (
-                active_mod.related_modules if active_mod else []
-            ),
-        }
-
-        # Create temporary updated state to test follow-up requirement
-        temp_state = state.model_copy(deep=True)
-        temp_state.facts.update(new_facts)
-        temp_state.facts["case_state"] = case_state
-
-        followup = self._fallback_engine.needs_followup(temp_state)
-
-        if followup is not None:
-            return IntakeAnalysisResult(
-                extracted_facts=new_facts,
-                is_ready_for_qa=False,
-                followup_question=followup,
-                synthesized_query=None,
-                case_state=case_state,
-            )
-
-        # Ready for Legal_QA
-        query = self._query_builder.build(temp_state)
-        return IntakeAnalysisResult(
-            extracted_facts=new_facts,
-            is_ready_for_qa=True,
-            followup_question=None,
-            synthesized_query=query,
-            case_state=case_state,
-        )
+    # Backward compatibility alias
+    _analyze_with_fallback = _fallback_analyze

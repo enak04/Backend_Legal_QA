@@ -1,13 +1,70 @@
 """
-Modular legal case classification and intake system.
+Universal legal case classification, intake system, and domain schemas.
 """
 
-from conversation.cases.models import CaseModule, StructuredCaseState
+from conversation.cases.models import (
+    CaseModule,
+    StructuredCaseState,
+    UniversalCaseState,
+    Jurisdiction,
+    FactItem,
+    LegalIssue,
+    Party,
+    Event,
+    Dates,
+    Financial,
+    EvidenceItem,
+    Communication,
+    ActionTaken,
+    Risk,
+    MissingFact,
+    ConfidenceScores,
+    RetrievedAuthority,
+    LegalAssessment,
+)
 from conversation.cases.registry import CaseRegistry, case_registry
+from conversation.cases.domains import (
+    DomainRegistry,
+    domain_registry,
+    EmploymentExtension,
+    ConsumerExtension,
+    PropertyExtension,
+    CriminalExtension,
+    CybercrimeExtension,
+    FamilyExtension,
+    ContractExtension,
+    GovernmentExtension,
+)
 
 __all__ = [
     "CaseModule",
     "StructuredCaseState",
+    "UniversalCaseState",
+    "Jurisdiction",
+    "FactItem",
+    "LegalIssue",
+    "Party",
+    "Event",
+    "Dates",
+    "Financial",
+    "EvidenceItem",
+    "Communication",
+    "ActionTaken",
+    "Risk",
+    "MissingFact",
+    "ConfidenceScores",
+    "RetrievedAuthority",
+    "LegalAssessment",
     "CaseRegistry",
     "case_registry",
+    "DomainRegistry",
+    "domain_registry",
+    "EmploymentExtension",
+    "ConsumerExtension",
+    "PropertyExtension",
+    "CriminalExtension",
+    "CybercrimeExtension",
+    "FamilyExtension",
+    "ContractExtension",
+    "GovernmentExtension",
 ]

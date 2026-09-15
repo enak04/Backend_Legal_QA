@@ -1,607 +1,656 @@
 """
-Follow-up question engine.
+Dynamic Follow-Up & Legal Information Value Engine.
 
-Determines whether a conversation has enough information to call Legal_QA
-or whether a targeted follow-up question should be asked first.
-
-Design goals:
-  - **Mode-aware**: ACTIONABLE asks more, INFORMATIVE/READABLE ask less.
-  - **Domain-specific**: Each legal domain has its own fact requirements.
-  - **Modular**: New domains and questions can be added without touching
-    the manager or API routes.
-  - **Extensible**: The rule-based approach can later be replaced by a
-    more sophisticated intake system.
+Implements dynamic fact extraction, multi-issue identification, and information-value
+ranking. Replaces rigid questionnaires with dynamic question selection that asks:
+  "Does this missing fact materially change applicable law, jurisdiction, remedy, or deadline?"
 """
 
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+import uuid
+from datetime import datetime, timezone
 from typing import Any
 
-from database.models import ConversationRecord, Mode
-
-
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# Domain definitions
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-
-@dataclass
-class FactRequirement:
-    """One fact that should be collected before calling Legal_QA."""
-    key: str                       # fact dictionary key, e.g. "state"
-    question: str                  # follow-up question to ask
-    priority: int = 0              # higher = asked first
-    required: bool = True          # if False, nice-to-have
-
-
-@dataclass
-class LegalDomain:
-    """A legal domain with its detection keywords and fact requirements."""
-    name: str
-    keywords: list[str]
-    fact_requirements: list[FactRequirement] = field(default_factory=list)
-    # Minimum number of required facts before we call Legal_QA.
-    # If the user volunteered enough info, we skip remaining questions.
-    min_required_facts: int = 2
-
-
-# ── Domain catalogue ──────────────────────────────────────────
-# Add new domains by appending to this list.
-
-DOMAINS: list[LegalDomain] = [
-    LegalDomain(
-        name="employment_wage",
-        keywords=[
-            "salary", "wage", "pay", "employer", "employment",
-            "fired", "terminated", "resign", "layoff", "retrench",
-            "pf", "provident fund", "gratuity", "bonus",
-            "workplace", "harassment at work", "labour", "labor",
-        ],
-        fact_requirements=[
-            FactRequirement(
-                key="employment_type",
-                question=(
-                    "Is your employer a private company, government "
-                    "organization, or contractor?"
-                ),
-                priority=10,
-            ),
-            FactRequirement(
-                key="state",
-                question="Which state are you employed in?",
-                priority=9,
-            ),
-            FactRequirement(
-                key="duration",
-                question=(
-                    "How long has this issue been ongoing? "
-                    "(e.g., 3 months, 1 year)"
-                ),
-                priority=8,
-            ),
-            FactRequirement(
-                key="written_contract",
-                question=(
-                    "Do you have a written employment contract or "
-                    "appointment letter?"
-                ),
-                priority=5,
-                required=False,
-            ),
-        ],
-        min_required_facts=2,
-    ),
-    LegalDomain(
-        name="property_land",
-        keywords=[
-            "property", "land", "tenant", "landlord", "rent",
-            "eviction", "lease", "registration", "encroachment",
-            "title", "deed", "flat", "apartment", "builder",
-            "real estate", "possession", "mutation",
-        ],
-        fact_requirements=[
-            FactRequirement(
-                key="property_type",
-                question=(
-                    "What type of property is this about? "
-                    "(e.g., residential flat, agricultural land, commercial)"
-                ),
-                priority=10,
-            ),
-            FactRequirement(
-                key="state",
-                question="In which state is the property located?",
-                priority=9,
-            ),
-            FactRequirement(
-                key="ownership_status",
-                question=(
-                    "Are you the owner, tenant, buyer, or someone else?"
-                ),
-                priority=8,
-            ),
-            FactRequirement(
-                key="dispute_type",
-                question=(
-                    "What is the main issue? (e.g., eviction, "
-                    "non-registration, encroachment, dispute with builder)"
-                ),
-                priority=7,
-                required=False,
-            ),
-        ],
-        min_required_facts=2,
-    ),
-    LegalDomain(
-        name="criminal",
-        keywords=[
-            "fir", "police", "crime", "theft", "assault", "murder",
-            "fraud", "cheating", "forgery", "bail", "arrest",
-            "complaint", "chargesheet", "accused", "victim",
-            "cybercrime", "stalking", "threat", "extortion",
-            "kidnap", "dowry", "domestic violence",
-        ],
-        fact_requirements=[
-            FactRequirement(
-                key="incident_type",
-                question=(
-                    "What type of incident occurred? "
-                    "(e.g., theft, fraud, assault, cybercrime)"
-                ),
-                priority=10,
-            ),
-            FactRequirement(
-                key="fir_filed",
-                question="Has an FIR been filed with the police?",
-                priority=9,
-            ),
-            FactRequirement(
-                key="state",
-                question="In which state did this occur?",
-                priority=8,
-            ),
-        ],
-        min_required_facts=2,
-    ),
-    LegalDomain(
-        name="family_matrimonial",
-        keywords=[
-            "divorce", "marriage", "custody", "alimony",
-            "maintenance", "child", "adoption", "guardianship",
-            "domestic violence", "dowry", "498a", "dv act",
-            "matrimonial", "husband", "wife", "spouse",
-            "separation", "mutual consent",
-        ],
-        fact_requirements=[
-            FactRequirement(
-                key="relationship",
-                question=(
-                    "What is your relationship to the other party? "
-                    "(e.g., spouse, parent, guardian)"
-                ),
-                priority=10,
-            ),
-            FactRequirement(
-                key="issue_type",
-                question=(
-                    "What is the primary issue? (e.g., divorce, "
-                    "custody, maintenance, domestic violence)"
-                ),
-                priority=9,
-            ),
-            FactRequirement(
-                key="state",
-                question=(
-                    "Which state are you located in?"
-                ),
-                priority=8,
-            ),
-        ],
-        min_required_facts=2,
-    ),
-    LegalDomain(
-        name="consumer",
-        keywords=[
-            "consumer", "product", "defective", "refund",
-            "warranty", "service", "overcharged", "misleading",
-            "advertisement", "e-commerce", "online purchase",
-            "delivery", "insurance claim", "bank", "loan",
-        ],
-        fact_requirements=[
-            FactRequirement(
-                key="product_or_service",
-                question=(
-                    "Is this about a product or a service?"
-                ),
-                priority=10,
-            ),
-            FactRequirement(
-                key="amount",
-                question=(
-                    "What is the approximate amount involved?"
-                ),
-                priority=8,
-            ),
-            FactRequirement(
-                key="complaint_filed",
-                question=(
-                    "Have you already raised a complaint with the "
-                    "company or any consumer forum?"
-                ),
-                priority=7,
-                required=False,
-            ),
-        ],
-        min_required_facts=1,
-    ),
-    LegalDomain(
-        name="money_recovery",
-        keywords=[
-            "lent money", "borrowed", "recover money", "return money",
-            "friend money", "repayment", "loan to friend", "debt",
-            "owe me money", "refusing to return", "refuses to return",
-            "given money", "lent someone",
-        ],
-        fact_requirements=[
-            FactRequirement(
-                key="transaction_nature",
-                question=(
-                    "When you gave the money, was it clearly agreed as a loan "
-                    "that would be repaid, or was it for an investment or something else?"
-                ),
-                priority=10,
-            ),
-            FactRequirement(
-                key="repayment_deadline",
-                question="Was there an agreed date or timeframe for returning the money?",
-                priority=9,
-            ),
-            FactRequirement(
-                key="state",
-                question="Which state did this transaction take place in?",
-                priority=8,
-            ),
-            FactRequirement(
-                key="evidence",
-                question=(
-                    "Do you have any proof of the transfer or acknowledgment "
-                    "(such as UPI, bank statement, or WhatsApp messages)?"
-                ),
-                priority=7,
-                required=False,
-            ),
-        ],
-        min_required_facts=2,
-    ),
-    LegalDomain(
-        name="contract_dispute",
-        keywords=[
-            "breach of contract", "service agreement", "never delivered the service",
-            "took my money but never delivered", "failed to deliver service",
-            "violation of agreement",
-        ],
-        fact_requirements=[
-            FactRequirement(
-                key="written_agreement",
-                question="Was there a written contract, service agreement, or invoice for this service?",
-                priority=10,
-            ),
-            FactRequirement(
-                key="state",
-                question="Which state are you located in?",
-                priority=9,
-            ),
-            FactRequirement(
-                key="amount",
-                question="What was the amount paid for the service?",
-                priority=8,
-                required=False,
-            ),
-        ],
-        min_required_facts=2,
-    ),
-    # ── Catch-all / general ──────────────────────────────────
-    LegalDomain(
-        name="general",
-        keywords=[],  # matches everything as fallback
-        fact_requirements=[
-            FactRequirement(
-                key="state",
-                question="Which state is this legal matter in?",
-                priority=10,
-            ),
-        ],
-        min_required_facts=0,  # general domain doesn't require facts
-    ),
-]
-
-
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# Fact extraction (rule-based, LLM-free)
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-# Indian states and union territories for automatic extraction.
-_INDIAN_STATES = [
-    "andhra pradesh", "arunachal pradesh", "assam", "bihar",
-    "chhattisgarh", "goa", "gujarat", "haryana", "himachal pradesh",
-    "jharkhand", "karnataka", "kerala", "madhya pradesh",
-    "maharashtra", "manipur", "meghalaya", "mizoram", "nagaland",
-    "odisha", "punjab", "rajasthan", "sikkim", "tamil nadu",
-    "telangana", "tripura", "uttar pradesh", "uttarakhand",
-    "west bengal", "delhi", "chandigarh", "puducherry",
-    "jammu and kashmir", "ladakh", "lakshadweep",
-    "andaman and nicobar", "dadra and nagar haveli",
-    "daman and diu",
-]
-
-_EMPLOYMENT_TYPES = {
-    "private": ["private", "pvt", "private company", "private sector",
-                "private limited", "startup"],
-    "government": ["government", "govt", "public sector", "psu",
-                   "central government", "state government"],
-    "contractor": ["contractor", "contract", "outsourced",
-                   "third party", "contractual"],
-}
-
-_DURATION_PATTERN = re.compile(
-    r"(\d+)\s*(months?|years?|weeks?|days?)",
-    re.IGNORECASE,
+from conversation.cases.domains import domain_registry
+from conversation.cases.models import (
+    ActionTaken,
+    Dates,
+    EvidenceItem,
+    FactItem,
+    Financial,
+    Jurisdiction,
+    LegalIssue,
+    MissingFact,
+    Party,
+    Risk,
+    UniversalCaseState,
 )
+from database.models import ConversationRecord, MessageRole, Mode
+from services.risk_engine import risk_engine
 
-_BOOLEAN_YES = {"yes", "yeah", "yep", "haan", "ha", "ji"}
-_BOOLEAN_NO = {"no", "nahi", "nope", "na"}
 
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 1. Dynamic Multi-Issue Spotter
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-def extract_facts(
-    text: str,
-    last_question_key: str | None = None,
-) -> dict[str, Any]:
+class DynamicIssueSpotter:
     """
-    Extract structured facts from free-text user input.
-
-    Uses keyword matching and regex patterns.  Returns a dict of
-    extracted facts (may be empty).
-
-    Parameters
-    ----------
-    text : str
-        The user's latest message.
-    last_question_key : str | None
-        The fact key that the last assistant question was about.
-        Helps interpret short answers like "yes" or "Karnataka".
+    Spots multiple simultaneous legal issues from natural language statements.
+    Labels them as hypotheses with confidence scores.
     """
-    text_lower = text.lower().strip()
-    facts: dict[str, Any] = {}
 
-    # ── State extraction ──────────────────────────────────────
-    for state_name in _INDIAN_STATES:
-        if state_name in text_lower:
-            facts["state"] = state_name.title()
-            break
-
-    # ── Employment type ───────────────────────────────────────
-    for emp_type, keywords in _EMPLOYMENT_TYPES.items():
-        if any(kw in text_lower for kw in keywords):
-            facts["employment_type"] = emp_type
-            break
-
-    # ── Duration ──────────────────────────────────────────────
-    match = _DURATION_PATTERN.search(text_lower)
-    if match:
-        facts["duration"] = f"{match.group(1)} {match.group(2).lower()}"
-
-    # ── Amount extraction ─────────────────────────────────────
-    amount_match = re.search(
-        r"(?:(?:₹|rs\.?|inr)\s*)?(\d+(?:,\d+)*(?:\.\d+)?\s*(?:lakhs?|crores?|k)?)",
-        text_lower,
-    )
-    if amount_match and any(c.isdigit() for c in amount_match.group(1)):
-        # Avoid picking up pure duration numbers like 3 months or simple counts
-        val = amount_match.group(1).strip()
-        if "lakh" in text_lower or "crore" in text_lower or "₹" in text or "rs" in text_lower or (len(val) >= 4 and val.replace(",", "").isdigit()):
-            facts["amount"] = val
-
-    # ── Transaction nature ────────────────────────────────────
-    if "loan" in text_lower:
-        facts["transaction_nature"] = "loan"
-    elif "gift" in text_lower:
-        facts["transaction_nature"] = "gift"
-    elif "investment" in text_lower:
-        facts["transaction_nature"] = "investment"
-    elif "advance" in text_lower:
-        facts["transaction_nature"] = "advance"
-
-    # ── Urgency indicators ────────────────────────────────────
-    if any(u in text_lower for u in ["court notice", "hearing next week", "hearing tomorrow", "arrest warrant", "urgent"]):
-        facts["urgency"] = "urgent"
-
-    # ── Negative / unavailable phrases ────────────────────────
-    _NEGATIVE_PHRASES = [
-        "don't have", "dont have", "do not have", "don't know", "dont know",
-        "do not know", "not sure", "no idea", "no document", "no proof",
-        "no written", "nothing", "not available", "no agreement", "none",
-        "cannot find", "can't find", "lost it", "no receipt",
+    _ISSUE_RULES = [
+        # Employment
+        (
+            re.compile(r"\b(salary|wages?|remuneration|dues|(?:not|hasn't|haven't)\s+(?:been\s+)?paid|pay(?!ment)|unpaid)\b", re.I),
+            "unpaid wages",
+            "employment",
+            ["Payment of Wages Act, 1936", "Karnataka Shops & Commercial Establishments Act, 1961"],
+        ),
+        (
+            re.compile(r"\b(fired|terminated|removed from (my )?job|sacked|dismissed)\b", re.I),
+            "termination of employment",
+            "employment",
+            ["Industrial Disputes Act, 1947", "State Shops and Establishments Acts"],
+        ),
+        (
+            re.compile(r"\b(wrongful|without notice|no notice|no reason|unfairly fired|retaliation)\b", re.I),
+            "possible wrongful termination",
+            "employment",
+            ["Section 39 Karnataka Shops Act / Section 25F Industrial Disputes Act"],
+        ),
+        # Consumer
+        (
+            re.compile(r"\b(defect(ive)?|stopped working|broken|faulty|malfunction)\b", re.I),
+            "defective goods or product liability",
+            "consumer",
+            ["Consumer Protection Act, 2019 Section 2(7) & Section 84"],
+        ),
+        (
+            re.compile(r"\b(refuses? to replace|refused refund|no replacement|deficiency)\b", re.I),
+            "deficiency in service and unfair trade practice",
+            "consumer",
+            ["Consumer Protection Act, 2019 Section 2(11) & Section 35"],
+        ),
+        # Property
+        (
+            re.compile(r"\b(changed (the )?locks|locked (me )?out|threw.*out|evict(ed|ion))\b", re.I),
+            "illegal dispossession / unlawful eviction",
+            "property",
+            ["Specific Relief Act, 1963 Section 6", "State Rent Control Act"],
+        ),
+        (
+            re.compile(r"\b(security deposit|deposit|not returned deposit|withheld deposit)\b", re.I),
+            "security deposit recovery dispute",
+            "property",
+            ["Indian Contract Act, 1872", "State Tenancy Acts"],
+        ),
+        # Criminal
+        (
+            re.compile(r"\b(assault(ed)?|beaten|beat|hit me|physical violence|injury|injured)\b", re.I),
+            "physical assault and voluntarily causing hurt",
+            "criminal",
+            ["Bharatiya Nyaya Sanhita, 2023 Section 115", "BNSS Section 173 (FIR)"],
+        ),
+        (
+            re.compile(r"\b(threat(ened)?|threat to kill|extort(ion)?|blackmail)\b", re.I),
+            "criminal intimidation and threat",
+            "criminal",
+            ["Bharatiya Nyaya Sanhita, 2023 Section 351"],
+        ),
+        # Cybercrime
+        (
+            re.compile(r"\b(transferred from my bank|unauthorized transaction|without (my )?permission|otp scam|money stolen)\b", re.I),
+            "unauthorized financial transaction",
+            "cybercrime",
+            ["RBI Master Direction on Customer Protection (2017)", "Information Technology Act, 2000 Section 66D"],
+        ),
+        (
+            re.compile(r"\b(cyber|phishing|hacked|online scam|telegram scam|fake website)\b", re.I),
+            "cyber fraud and identity theft",
+            "cybercrime",
+            ["Information Technology Act, 2000 Section 43 & Section 66C"],
+        ),
+        # Family
+        (
+            re.compile(r"\b(financial support|maintenance|stopped paying|refuses to maintain)\b", re.I),
+            "denial of maintenance and financial neglect",
+            "family",
+            ["Section 144 BNSS / Section 125 CrPC", "Protection of Women from Domestic Violence Act, 2005"],
+        ),
+        (
+            re.compile(r"\b(custody|child|divorce|separated|matrimonial)\b", re.I),
+            "matrimonial separation and custody dispute",
+            "family",
+            ["Guardians and Wards Act, 1890", "Special Marriage Act / Hindu Marriage Act"],
+        ),
+        # Contract
+        (
+            re.compile(r"\b(contractor|never completed|incomplete work|breach|failed to perform)\b", re.I),
+            "breach of contract and failure of performance",
+            "contract",
+            ["Indian Contract Act, 1872 Section 73 & Section 74"],
+        ),
+        (
+            re.compile(r"\b(recover money|unpaid invoice|repay|loan default|promissory|lent money|borrowed money|refuses to return|not returning)\b", re.I),
+            "Money Recovery",
+            "contract",
+            ["Limitation Act, 1963", "Order XXXVII CPC (Summary Suit)"],
+        ),
+        # Government
+        (
+            re.compile(r"\b(government notice|govt notice|municipal notice|demolition notice|show cause notice|notice from (a )?government)\b", re.I),
+            "statutory notice from public authority",
+            "government",
+            ["Constitution of India Article 226", "Principles of Natural Justice"],
+        ),
+        (
+            re.compile(r"\b(rti|information denied|public authority)\b", re.I),
+            "RTI compliance and administrative grievance",
+            "government",
+            ["Right to Information Act, 2005 Section 6 & 19"],
+        ),
     ]
 
-    # ── Boolean & short answers to last question ──────────────
+    def spot_issues(self, text: str) -> list[LegalIssue]:
+        text_lower = text.lower()
+        spotted: list[LegalIssue] = []
+        seen_issues = set()
+
+        for pattern, issue_name, domain, laws in self._ISSUE_RULES:
+            if pattern.search(text_lower):
+                if issue_name not in seen_issues:
+                    seen_issues.add(issue_name)
+                    spotted.append(
+                        LegalIssue(
+                            issue=issue_name,
+                            domain=domain,
+                            status="hypothesis",
+                            confidence=0.75,
+                            applicable_laws=laws,
+                        )
+                    )
+
+        return spotted
+
+
+class DomainInfo:
+    """Lightweight domain representation for legacy and test compatibility."""
+    def __init__(self, name: str) -> None:
+        self.name = name
+
+    def __repr__(self) -> str:
+        return f"DomainInfo(name='{self.name}')"
+
+
+def detect_domain(text: str) -> DomainInfo:
+    """
+    Detect the primary legal domain for legacy compatibility.
+    Maps to domain names expected by tests.
+    """
+    text_lower = text.lower()
+    if re.search(r"\b(salary|wages?|pay|employer|employee|fired|terminated|job|resigned)\b", text_lower):
+        return DomainInfo("employment_wage")
+    if re.search(r"\b(landlord|tenant|evict|flat|rent|property|deposit|lease)\b", text_lower):
+        return DomainInfo("property_land")
+    if re.search(r"\b(fir|theft|assault|police|crime|accused|arrest|bailable|bail)\b", text_lower):
+        return DomainInfo("criminal")
+    if re.search(r"\b(divorce|maintenance|custody|spouse|wife|husband|marriage|matrimonial)\b", text_lower):
+        return DomainInfo("family_matrimonial")
+    if re.search(r"\b(consumer|defective|product|warranty|refund|seller|replacement)\b", text_lower):
+        return DomainInfo("consumer")
+    return DomainInfo("general")
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 2. Dynamic Fact Extractor
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+INDIAN_STATES = [
+    "Andhra Pradesh", "Arunachal Pradesh", "Assam", "Bihar", "Chhattisgarh",
+    "Goa", "Gujarat", "Haryana", "Himachal Pradesh", "Jharkhand", "Karnataka",
+    "Kerala", "Madhya Pradesh", "Maharashtra", "Manipur", "Meghalaya", "Mizoram",
+    "Nagaland", "Odisha", "Punjab", "Rajasthan", "Sikkim", "Tamil Nadu",
+    "Telangana", "Tripura", "Uttar Pradesh", "Uttarakhand", "West Bengal",
+    "Delhi", "Jammu and Kashmir", "Chandigarh", "Puducherry",
+]
+
+MAJOR_INDIAN_CITIES = {
+    "Bengaluru": "Karnataka", "Bangalore": "Karnataka", "Mumbai": "Maharashtra",
+    "Pune": "Maharashtra", "Delhi": "Delhi", "New Delhi": "Delhi",
+    "Hyderabad": "Telangana", "Chennai": "Tamil Nadu", "Kolkata": "West Bengal",
+    "Ahmedabad": "Gujarat", "Gurgaon": "Haryana", "Gurugram": "Haryana",
+    "Noida": "Uttar Pradesh", "Jaipur": "Rajasthan", "Lucknow": "Uttar Pradesh",
+}
+
+
+def extract_facts(text: str, last_question_key: str | None = None) -> dict[str, Any]:
+    """
+    Extract structured facts from text without presupposing domain.
+    Accepts optional last_question_key to capture short answers or yes/no responses.
+    Returns a dictionary of normalized facts.
+    """
+    facts: dict[str, Any] = {}
+    text_clean = text.strip()
+    text_lower = text_clean.lower()
+
+    # Handle short / boolean answers for last_question_key
     if last_question_key:
-        if text_lower in _BOOLEAN_YES:
+        if text_lower in ("yes", "y", "true", "correct", "yep", "yeah"):
             facts[last_question_key] = "yes"
-        elif text_lower in _BOOLEAN_NO:
+        elif text_lower in ("no", "n", "false", "incorrect", "nope"):
             facts[last_question_key] = "no"
-        elif any(p in text_lower for p in _NEGATIVE_PHRASES):
-            facts[last_question_key] = "not_available"
-        # If it's a short answer and we asked a specific question,
-        # store the raw answer under that key.
-        elif len(text_lower.split()) <= 8 and last_question_key not in facts:
-            # Only if we haven't extracted a structured value already
-            already_matched = any(k in facts for k in [
-                "state", "employment_type", "duration", "amount"
-            ])
-            if not already_matched:
-                facts[last_question_key] = text.strip()
+        elif len(text_clean.split()) <= 4 and not any(k in text_lower for k in ["salary", "employer", "month", "job"]):
+            facts[last_question_key] = text_clean
+
+    # 1. Jurisdiction: State and City
+    for city, state in MAJOR_INDIAN_CITIES.items():
+        if re.search(rf"\b{city.lower()}\b", text_lower):
+            facts["city"] = city
+            facts["state"] = state
+            break
+
+    if "state" not in facts:
+        for state in INDIAN_STATES:
+            if re.search(rf"\b{state.lower()}\b", text_lower):
+                facts["state"] = state
+                break
+
+    # 2. Monetary Amounts
+    amount_match = re.search(
+        r"(?:(?:rs\.?|inr|₹)\s*([\d,]+(?:\.\d+)?)\s*(?:lakh|crore|k)?|([\d,]+(?:\.\d+)?)\s*(?:lakhs?|crores?|k)\s*(?:rs\.?|inr|rupees)?)",
+        text_lower,
+    )
+    if amount_match:
+        facts["amount_raw"] = amount_match.group(0).strip()
+
+    # Specific ₹80,000 or 2 lakh patterns
+    lakh_match = re.search(r"(\d+(?:\.\d+)?)\s*lakh", text_lower)
+    if lakh_match:
+        try:
+            facts["amount"] = float(lakh_match.group(1)) * 100000
+            facts["amount_raw"] = f"₹{float(lakh_match.group(1)):g} Lakh"
+        except ValueError:
+            pass
+
+    num_match = re.search(r"(?:rs\.?|₹)\s*([\d,]+)", text_lower)
+    if num_match and "amount" not in facts:
+        raw_num = num_match.group(1).replace(",", "")
+        try:
+            facts["amount"] = float(raw_num)
+            facts["amount_raw"] = f"₹{facts['amount']:,.0f}"
+        except ValueError:
+            pass
+
+    # 3. Durations & Timelines
+    dur_match = re.search(r"\b(\d+)\s*(days?|weeks?|months?|years?)\b", text_lower)
+    if dur_match:
+        facts["duration"] = f"{dur_match.group(1)} {dur_match.group(2)}"
+
+    date_rel_match = re.search(r"\b(yesterday|today|last week|last month|2 weeks ago|3 months ago)\b", text_lower)
+    if date_rel_match:
+        facts["relative_date"] = date_rel_match.group(1)
+
+    # 4. Employment Type (Check government before general company)
+    if re.search(r"\b(government|govt|psu|civil servant|public sector)\b", text_lower):
+        facts["employment_type"] = "government"
+    elif re.search(r"\b(private|startup|tech firm|company|mnc|corporate)\b", text_lower):
+        facts["employment_type"] = "private"
+
+    # 5. Contract / Documentation
+    if re.search(r"\b(no contract|verbal only|no clauses|no agreement|oral|don't have|dont have|no written|not have)\b", text_lower):
+        facts["written_contract"] = "no"
+    elif re.search(r"\b(written contract|offer letter|appointment letter|registered agreement|lease agreement)\b", text_lower):
+        facts["written_contract"] = "yes"
+
+    # 6. Eviction / Lockout
+    if re.search(r"\b(changed (the )?locks|locked me out|thrown.*out)\b", text_lower):
+        facts["eviction_status"] = "forcible lockout"
+
+    # 7. Actions Already Taken
+    actions: list[str] = []
+    if re.search(r"\b(filed an? fir|reported to police|police complaint|dialed 112)\b", text_lower):
+        actions.append("police_complaint_filed")
+    if re.search(r"\b(called 1930|reported on cybercrime|reported to bank|informed bank)\b", text_lower):
+        actions.append("bank_or_cyber_notified")
+    if re.search(r"\b(sent (a )?legal notice|served notice|demand letter)\b", text_lower):
+        actions.append("legal_notice_sent")
+    if re.search(r"\b(complained to hr|contacted employer|emailed boss)\b", text_lower):
+        actions.append("contacted_employer")
+
+    if actions:
+        facts["actions_already_taken"] = actions
 
     return facts
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# Domain detection
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-def detect_domain(text: str) -> LegalDomain:
-    """
-    Identify the most likely legal domain from the text.
-
-    Scores each domain by counting keyword matches and returns
-    the highest-scoring one.  Falls back to ``general``.
-    """
-    text_lower = text.lower()
-    best_domain = DOMAINS[-1]  # "general" fallback
-    best_score = 0
-
-    for domain in DOMAINS:
-        if not domain.keywords:
-            continue  # skip catch-all for scoring
-        score = sum(1 for kw in domain.keywords if kw in text_lower)
-        if score > best_score:
-            best_score = score
-            best_domain = domain
-
-    return best_domain
-
-
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# Follow-up engine
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 3. Dynamic Legal Information-Value Ranker & Engine
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 class FollowUpEngine:
     """
-    Decides whether to ask a follow-up question or proceed to Legal_QA.
-
-    The engine is **mode-aware**:
-
-    * **ACTIONABLE** — uses domain-specific question trees; collects
-      facts until ``min_required_facts`` are satisfied.
-    * **INFORMATIVE** — only asks if the question is very vague
-      (fewer than ~5 meaningful words).
-    * **READABLE** — almost never asks follow-ups; sends straight
-      to Legal_QA.
+    Evaluates Universal Case State to determine:
+      1. Has sufficient information been collected to provide a useful legal answer?
+      2. If not, what is the single highest-value missing fact that materially
+         changes the legal outcome?
     """
+
+    def __init__(self) -> None:
+        self._issue_spotter = DynamicIssueSpotter()
+
+    def update_case_state_from_text(
+        self,
+        state: UniversalCaseState,
+        user_message: str,
+        turn_number: int = 1,
+    ) -> UniversalCaseState:
+        """Update UniversalCaseState with facts, issues, and risks extracted from text."""
+        # 1. Extract facts
+        extracted = extract_facts(user_message)
+
+        if "state" in extracted and not state.jurisdiction.state:
+            state.jurisdiction.state = extracted["state"]
+        if "city" in extracted and not state.jurisdiction.city:
+            state.jurisdiction.city = extracted["city"]
+
+        if "amount" in extracted and not state.financial.amount:
+            state.financial.amount = extracted["amount"]
+        if "amount_raw" in extracted and not state.financial.amount_raw:
+            state.financial.amount_raw = extracted["amount_raw"]
+
+        if "duration" in extracted and not state.dates.incident_date:
+            state.dates.incident_date = extracted["duration"]
+
+        # Record explicit FactItem
+        fact_id = uuid.uuid4().hex[:8]
+        new_fact = FactItem(
+            id=fact_id,
+            fact=user_message.strip(),
+            category=state.case_domain or "general",
+            source="user_stated",
+            confidence=1.0,
+            is_explicit=True,
+            turn=turn_number,
+        )
+        state.known_facts.append(new_fact.model_dump())
+
+        # 2. Spot issues
+        spotted_issues = self._issue_spotter.spot_issues(user_message)
+        existing_issue_names = {i.issue for i in state.issues}
+        for issue in spotted_issues:
+            if issue.issue not in existing_issue_names:
+                state.issues.append(issue)
+                if not state.case_domain:
+                    state.case_domain = issue.domain
+
+        if state.issues:
+            if not state.case_type:
+                state.case_type = state.issues[0].issue
+            if not state.subcategory:
+                state.subcategory = state.issues[0].issue
+
+        # 3. Detect risk
+        state.risk = risk_engine.detect_risk(user_message, state)
+        state.urgency = state.risk.level
+
+        # 4. Actions taken
+        if "actions_already_taken" in extracted:
+            for act in extracted["actions_already_taken"]:
+                if not any(a.action == act for a in state.actions_already_taken):
+                    state.actions_already_taken.append(ActionTaken(action=act))
+
+        # 5. Populate domain extensions if detected
+        detected = domain_registry.detect_domains(user_message)
+        if detected and not state.case_domain:
+            state.case_domain = detected[0][0]
+
+        return state
+
+    def evaluate_missing_facts(
+        self,
+        case_state: UniversalCaseState,
+    ) -> list[MissingFact]:
+        """
+        Identify and rank missing facts by legal information value.
+        """
+        missing: list[MissingFact] = []
+        domain_name = case_state.case_domain or "general"
+        domain_def = domain_registry.get(domain_name)
+
+        # 1. Domain-specific high value questions from registry
+        if domain_def:
+            for q_def in domain_def.high_value_questions:
+                key = q_def["fact_key"]
+                # Check if already answered in state
+                if self._is_fact_known(case_state, key):
+                    continue
+
+                missing.append(
+                    MissingFact(
+                        fact_key=key,
+                        description=q_def.get("reason", "Legally material fact"),
+                        legal_importance=q_def.get("importance", "HIGH"),
+                        reason=q_def.get("reason", ""),
+                        sample_question=q_def.get("question", ""),
+                    )
+                )
+
+        # 2. Universal core requirements: Jurisdiction
+        if not case_state.jurisdiction.state and not any(m.fact_key == "jurisdiction_state" for m in missing):
+            missing.append(
+                MissingFact(
+                    fact_key="jurisdiction_state",
+                    description="State jurisdiction in India",
+                    legal_importance="HIGH",
+                    reason="State laws, local rent control, and labor tribunals are state-specific",
+                    sample_question="Which state or city are you located in?",
+                )
+            )
+
+        # Sort by legal importance: HIGH -> MEDIUM -> LOW
+        importance_weight = {"HIGH": 3, "MEDIUM": 2, "LOW": 1}
+        missing.sort(key=lambda m: importance_weight.get(m.legal_importance, 0), reverse=True)
+
+        return missing
+
+    def _is_fact_known(self, state: UniversalCaseState, key: str) -> bool:
+        """Check if a factual dimension is already established."""
+        all_fact_text = " ".join(
+            f.get("fact", "") if isinstance(f, dict) else str(f)
+            for f in state.known_facts
+        ).lower()
+
+        if "jurisdiction" in key or "state" in key:
+            return bool(state.jurisdiction.state or state.jurisdiction.city)
+
+        if "employment_type" in key:
+            return any(w in all_fact_text for w in ["private", "government", "psu", "contractor", "startup"])
+
+        if "contract" in key or "agreement" in key:
+            return any(w in all_fact_text for w in ["contract", "offer letter", "appointment letter", "lease", "verbal only", "no clauses", "written"])
+
+        if "possession" in key:
+            return any(w in all_fact_text for w in ["locked out", "in possession", "thrown out", "dispossessed"])
+
+        if "police" in key or "fir" in key:
+            return any(a.action in ["police_complaint_filed", "bank_or_cyber_notified"] for a in state.actions_already_taken)
+
+        if "amount" in key or "paid" in key:
+            return bool(state.financial.amount or state.financial.amount_raw)
+
+        return False
+
+    def is_sufficient_information(
+        self,
+        record: ConversationRecord,
+        case_state: UniversalCaseState,
+    ) -> bool:
+        """
+        Determine if enough information exists to provide a useful, grounded legal answer.
+        Does NOT demand all schema fields!
+        """
+        # In Readable or Informative modes, answer immediately
+        if record.mode in (Mode.READABLE, Mode.INFORMATIVE):
+            return True
+
+        # Check if user explicitly asked to skip questions or give advice now
+        user_messages = [m.content.lower() for m in record.messages if m.role == MessageRole.USER]
+        if user_messages:
+            latest = user_messages[-1]
+            if any(phrase in latest for phrase in [
+                "skip question", "tell me what to do", "give me advice now",
+                "no more question", "just advise", "remedy now", "legal advice now",
+                "what are my options", "what should i do"
+            ]):
+                return True
+
+        # Turn Cap: if 3 or more user turns have elapsed, stop asking questions!
+        user_turns = len(user_messages)
+        if user_turns >= 3:
+            return True
+
+        # If turn == 1, ALWAYS ask at least 1 high-value question
+        if user_turns == 1:
+            return False
+
+        # If turn == 2: If core dimensions (jurisdiction + main issue + relationship) are known, we can answer!
+        has_jurisdiction = bool(case_state.jurisdiction.state or case_state.jurisdiction.city)
+        has_core_facts = len(case_state.known_facts) >= 2 or bool(case_state.financial.amount or case_state.dates.incident_date)
+
+        missing = self.evaluate_missing_facts(case_state)
+        high_missing = [m for m in missing if m.legal_importance == "HIGH"]
+
+        if not high_missing and has_jurisdiction:
+            return True
+
+        return False
+
+    def select_highest_value_question(
+        self,
+        case_state: UniversalCaseState,
+    ) -> str:
+        """
+        Select the single highest-value question with a concise 'Why this matters' explanation.
+        """
+        missing = self.evaluate_missing_facts(case_state)
+
+        if missing:
+            top_missing = missing[0]
+            question = top_missing.sample_question
+            reason = top_missing.reason
+
+            if reason and "why" not in question.lower():
+                return f"{question}\n*(Why this matters: {reason})*"
+            return question
+
+        return (
+            "Could you share any further details or documents you have regarding this dispute, "
+            "or let me know if you are ready for your actionable legal options?"
+        )
+
+    # ── Legacy FollowUpEngine API compatibility ───────────────────
 
     def needs_followup(self, state: ConversationRecord) -> str | None:
         """
-        Return a follow-up question string, or ``None`` if enough
-        information is available to call Legal_QA.
+        Evaluate whether a follow-up question is needed.
+        Returns a question string if needed, or None if no follow-up is needed.
         """
-        mode = state.mode
-
-        # ── READABLE: never ask follow-ups ────────────────────
-        if mode == Mode.READABLE:
+        if state.mode == Mode.READABLE:
             return None
 
-        # ── INFORMATIVE: only if very vague ───────────────────
-        if mode == Mode.INFORMATIVE:
-            return self._informative_followup(state)
+        user_messages = [m.content for m in state.messages if m.role == MessageRole.USER]
+        last_msg = user_messages[-1] if user_messages else ""
 
-        # ── ACTIONABLE: domain-aware intake ───────────────────
-        return self._actionable_followup(state)
-
-    # ── INFORMATIVE mode ──────────────────────────────────────
-
-    @staticmethod
-    def _informative_followup(state: ConversationRecord) -> str | None:
-        """
-        For informative mode, only ask a follow-up if the user's
-        question is extremely short or vague.
-        """
-        user_msgs = [
-            m.content for m in state.messages if m.role.value == "user"
-        ]
-        if not user_msgs:
+        if state.mode == Mode.INFORMATIVE:
+            # If the user's question is too brief / ambiguous, ask for clarification
+            if len(last_msg.strip().split()) <= 2:
+                return "Could you please provide more details or context about the legal topic you would like to know about?"
             return None
 
-        all_text = " ".join(user_msgs)
-        word_count = len(all_text.split())
+        if state.mode == Mode.ACTIONABLE:
+            facts = state.facts or {}
+            # If standard legacy facts are already satisfied:
+            if facts.get("employment_type") and facts.get("state"):
+                return None
 
-        # If the total user input is very short, ask for elaboration
-        if word_count < 4:
-            return (
-                "Could you provide a bit more detail about your legal "
-                "question so I can give you accurate information?"
-            )
+            # Check case state
+            raw_cs = facts.get("case_state")
+            if isinstance(raw_cs, UniversalCaseState):
+                case_state = raw_cs
+            elif isinstance(raw_cs, dict):
+                case_state = UniversalCaseState(**raw_cs)
+            else:
+                case_state = UniversalCaseState()
+                for msg in user_messages:
+                    self.update_case_state_from_text(case_state, msg)
+                if facts.get("state"):
+                    case_state.jurisdiction.state = facts["state"]
+                if facts.get("employment_type"):
+                    case_state.employment.employment_type = facts["employment_type"]
+
+            if facts.get("employment_type") and (facts.get("state") or case_state.jurisdiction.state):
+                return None
+
+            if self.is_sufficient_information(state, case_state):
+                return None
+
+            return self.select_highest_value_question(case_state)
 
         return None
 
-    # ── ACTIONABLE mode ───────────────────────────────────────
+    def should_ask_followup(
+        self,
+        state: ConversationRecord,
+        latest_message: str,
+    ) -> bool:
+        """Backward-compatible wrapper."""
+        case_state = state.facts.get("case_state")
+        if not isinstance(case_state, UniversalCaseState):
+            if isinstance(case_state, dict):
+                case_state = UniversalCaseState(**case_state)
+            else:
+                case_state = UniversalCaseState()
 
-    @staticmethod
-    def _actionable_followup(state: ConversationRecord) -> str | None:
-        """
-        For actionable mode, detect the domain and collect missing
-        high-priority facts one at a time.
-        """
-        # Build a combined text from all user messages for domain detection
-        user_text = " ".join(
-            m.content for m in state.messages if m.role.value == "user"
-        )
-        domain = detect_domain(user_text)
+        self.update_case_state_from_text(case_state, latest_message, len(state.messages))
+        state.facts["case_state"] = case_state.model_dump()
+        return not self.is_sufficient_information(state, case_state)
 
-        # Store detected domain as a fact so QueryBuilder can use it
-        if "detected_domain" not in state.facts:
-            state.facts["detected_domain"] = domain.name
+    def get_next_question(self, state: ConversationRecord) -> str:
+        """Backward-compatible wrapper."""
+        case_state = state.facts.get("case_state")
+        if not isinstance(case_state, UniversalCaseState):
+            if isinstance(case_state, dict):
+                case_state = UniversalCaseState(**case_state)
+            else:
+                case_state = UniversalCaseState()
 
-        # Count how many *required* facts we already have (including not_available/not_provided)
-        collected_required = 0
-        for req in domain.fact_requirements:
-            if req.required and req.key in state.facts:
-                collected_required += 1
-
-        # If we have enough or user answered multiple turns, proceed to Legal_QA
-        user_turn_count = sum(
-            1 for m in state.messages if m.role.value == "user"
-        )
-        if collected_required >= domain.min_required_facts or user_turn_count >= 3:
-            return None
-
-        # If the assistant already asked a question last turn and user didn't provide that key,
-        # mark it as not_provided to prevent ever asking the exact same question twice
-        if state.last_assistant_question:
-            for req in domain.fact_requirements:
-                if req.question == state.last_assistant_question and req.key not in state.facts:
-                    state.facts[req.key] = "not_provided"
-
-        # Find the highest-priority missing required fact
-        missing = [
-            req
-            for req in domain.fact_requirements
-            if req.required and req.key not in state.facts
-        ]
-        missing.sort(key=lambda r: r.priority, reverse=True)
-
-        for req in missing:
-            if req.question != state.last_assistant_question:
-                return req.question
-
-        return None
+        return self.select_highest_value_question(case_state)
 
     def get_last_question_key(self, state: ConversationRecord) -> str | None:
-        """
-        Return the fact key that the last assistant question was
-        targeting, so ``extract_facts`` can interpret short answers.
-        """
-        if not state.last_assistant_question:
-            return None
-
-        user_text = " ".join(
-            m.content for m in state.messages if m.role.value == "user"
-        )
-        domain = detect_domain(user_text)
-
-        for req in domain.fact_requirements:
-            if req.question == state.last_assistant_question:
-                return req.key
-
+        """Derive the key of the last question asked by the assistant."""
+        last_q = state.last_assistant_question or ""
+        if not last_q:
+            for m in reversed(state.messages):
+                if m.role == MessageRole.ASSISTANT:
+                    last_q = m.content
+                    break
+        last_q_lower = last_q.lower()
+        if "contract" in last_q_lower or "appointment letter" in last_q_lower or "written agreement" in last_q_lower:
+            return "written_contract"
+        if "fir" in last_q_lower or "police complaint" in last_q_lower:
+            return "fir_filed"
+        if "state" in last_q_lower or "which city" in last_q_lower:
+            return "state"
+        if "private" in last_q_lower or "government" in last_q_lower or "employer" in last_q_lower:
+            return "employment_type"
+        if "property" in last_q_lower or "flat" in last_q_lower:
+            return "property_type"
+        if "amount" in last_q_lower or "salary" in last_q_lower or "how much" in last_q_lower:
+            return "amount"
         return None
+
+
+followup_engine = FollowUpEngine()

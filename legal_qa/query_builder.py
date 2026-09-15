@@ -1,15 +1,14 @@
 """
 Query builder — constructs a coherent Legal_QA question from
-accumulated conversation state.
+accumulated Universal Case State and conversation context.
 
-Instead of sending only the latest user message, this module
-combines:
-  - the original problem statement
-  - all collected facts
+Combines:
+  - the original legal problem statement
+  - all collected facts and jurisdiction
+  - identified legal issues & hypotheses
   - relevant conversation context
 
-into a single, well-formed question that Legal_QA can process
-effectively.
+into a well-formed query that Legal_QA can process effectively.
 """
 
 from __future__ import annotations
@@ -18,16 +17,11 @@ from database.models import ConversationRecord, MessageRole
 
 
 class QueryBuilder:
-    """Builds a coherent legal question from conversation state."""
+    """Builds a coherent legal question from Universal Case State."""
 
     def build(self, state: ConversationRecord) -> str:
         """
         Construct the question string to send to Legal_QA.
-
-        Strategy:
-        1. If only one user message and no facts → send it directly.
-        2. If facts are available → construct a contextualised query
-           combining the original problem with collected facts.
         """
         user_messages = [
             m.content for m in state.messages if m.role == MessageRole.USER
@@ -36,24 +30,33 @@ class QueryBuilder:
         if not user_messages:
             return ""
 
-        # ── Simple case: single message, no extra facts ──────
+        original_problem = user_messages[0]
+        case_state = state.facts.get("case_state") or {}
+
+        # Add facts from state.facts
         non_meta_facts = {
             k: v
             for k, v in state.facts.items()
-            if k not in ("detected_domain", "case_state") and not isinstance(v, (dict, list))
+            if k not in ("detected_domain", "case_state", "legal_assessment") and not isinstance(v, (dict, list))
         }
 
-        if len(user_messages) == 1 and not non_meta_facts:
-            return user_messages[0]
+        # Pull jurisdiction if available
+        has_case_issues = isinstance(case_state, dict) and bool(case_state.get("issues"))
+        if isinstance(case_state, dict):
+            jur = case_state.get("jurisdiction") or {}
+            if isinstance(jur, dict) and jur.get("state") and "state" not in non_meta_facts:
+                non_meta_facts["state"] = jur["state"]
 
-        # ── Complex case: build contextualised query ─────────
-        original_problem = user_messages[0]
+            fin = case_state.get("financial") or {}
+            if isinstance(fin, dict) and fin.get("amount_raw") and "amount" not in non_meta_facts:
+                non_meta_facts["amount"] = fin["amount_raw"]
+
+        if len(user_messages) == 1 and not non_meta_facts and not has_case_issues:
+            return original_problem
+
         parts: list[str] = []
-
-        # Opening with original problem
         parts.append(f"Client's legal concern: {original_problem}")
 
-        # Add collected facts
         if non_meta_facts:
             fact_lines = []
             for key, value in non_meta_facts.items():
@@ -63,12 +66,18 @@ class QueryBuilder:
                 "Relevant details established:\n" + "\n".join(fact_lines)
             )
 
-        # Add any additional context from later messages
-        # (skip the first message since it's already included,
-        #  and skip very short answers that are just fact-responses)
+        # Add identified issues if present
+        if isinstance(case_state, dict) and case_state.get("issues"):
+            issue_lines = []
+            for iss in case_state["issues"]:
+                iss_name = iss.get("issue") if isinstance(iss, dict) else str(iss)
+                issue_lines.append(f"  - {iss_name}")
+            parts.append("Spotted legal issues:\n" + "\n".join(issue_lines))
+
+        # Add substantive context from later user messages
         additional_context = []
         for msg in user_messages[1:]:
-            if len(msg.split()) > 5:  # only include substantive messages
+            if len(msg.split()) > 4:
                 additional_context.append(msg)
 
         if additional_context:
@@ -77,11 +86,11 @@ class QueryBuilder:
                 + " ".join(additional_context)
             )
 
-        # Closing: ask for the appropriate legal guidance
-        domain = state.facts.get("detected_domain", "general")
+        # Closing: ask for actionable guidance in second person
         parts.append(
+            "Address the recipient directly as 'you' in second person. "
             "Based on the above, what direct actionable legal remedies, procedures, "
-            "and relevant Indian statutory provisions apply to the client?"
+            "and relevant Indian statutory provisions apply?"
         )
 
         return "\n\n".join(parts)
