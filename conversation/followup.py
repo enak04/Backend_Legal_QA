@@ -463,23 +463,65 @@ class FollowUpEngine:
             for f in state.known_facts
         ).lower()
 
+        # Check party entity types as well
+        party_parts = []
+        if isinstance(state.parties, list):
+            for p in state.parties:
+                if hasattr(p, "role"):
+                    party_parts.append(f"{p.role} {p.name_or_description} {p.entity_type or ''}")
+                elif isinstance(p, dict):
+                    party_parts.append(f"{p.get('role', '')} {p.get('name_or_description', '')} {p.get('entity_type', '')}")
+                else:
+                    party_parts.append(str(p))
+        elif isinstance(state.parties, dict):
+            for k, v in state.parties.items():
+                party_parts.append(f"{k} {v}")
+        party_text = " ".join(party_parts).lower()
+        combined_text = f"{all_fact_text} {party_text} {state.summary or ''}".lower()
+
         if "jurisdiction" in key or "state" in key:
             return bool(state.jurisdiction.state or state.jurisdiction.city)
 
         if "employment_type" in key:
-            return any(w in all_fact_text for w in ["private", "government", "psu", "contractor", "startup"])
+            return any(
+                w in combined_text
+                for w in [
+                    "private", "government", "psu", "contractor", "startup", "tech",
+                    "it firm", "it company", "mnc", "corporate", "firm", "factory",
+                    "establishment", "workman", "civil servant"
+                ]
+            )
 
         if "contract" in key or "agreement" in key:
-            return any(w in all_fact_text for w in ["contract", "offer letter", "appointment letter", "lease", "verbal only", "no clauses", "written"])
+            return any(
+                w in combined_text
+                for w in [
+                    "contract", "offer letter", "appointment letter", "lease",
+                    "verbal only", "no clauses", "written agreement", "registered deed",
+                    "service agreement", "invoice", "receipt"
+                ]
+            )
 
         if "possession" in key:
-            return any(w in all_fact_text for w in ["locked out", "in possession", "thrown out", "dispossessed"])
+            return any(
+                w in combined_text
+                for w in [
+                    "locked out", "in possession", "thrown out", "dispossessed",
+                    "evicted", "vacated", "still living", "occupying"
+                ]
+            )
 
-        if "police" in key or "fir" in key:
-            return any(a.action in ["police_complaint_filed", "bank_or_cyber_notified"] for a in state.actions_already_taken)
+        if "police" in key or "fir" in key or "portal" in key or "reporting" in key:
+            return any(
+                a.action in ["police_complaint_filed", "bank_or_cyber_notified"]
+                for a in state.actions_already_taken
+            ) or any(w in combined_text for w in ["fir", "police complaint", "cybercrime", "1930", "disputed with bank"])
 
-        if "amount" in key or "paid" in key:
+        if "amount" in key or "paid" in key or "loss" in key or "value" in key:
             return bool(state.financial.amount or state.financial.amount_raw)
+
+        if "date" in key or "timing" in key or "hour" in key or "duration" in key:
+            return bool(state.dates.incident_date or state.dates.notice_date)
 
         return False
 

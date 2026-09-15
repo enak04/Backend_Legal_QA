@@ -233,14 +233,40 @@ class OpenAIIntakeService:
         system_prompt = self._build_dynamic_prompt(candidate_modules, state.mode)
 
         conversation_history = []
+        previous_assistant_questions = []
+        user_turn_count = 0
         for msg in state.messages:
-            role = "user" if msg.role == MessageRole.USER else "assistant"
-            conversation_history.append({"role": role, "content": msg.content})
+            if isinstance(msg, dict):
+                r_val = msg.get("role")
+                role = "user" if r_val in (MessageRole.USER, "user") else "assistant"
+                content = str(msg.get("content", ""))
+            elif hasattr(msg, "role"):
+                role = "user" if msg.role == MessageRole.USER else "assistant"
+                content = str(msg.content)
+            else:
+                role = "user"
+                content = str(msg)
 
-        previous_assistant_questions = [
-            m.content for m in state.messages if m.role == MessageRole.ASSISTANT
+            conversation_history.append({"role": role, "content": content})
+            if role == "assistant":
+                previous_assistant_questions.append(content)
+            else:
+                user_turn_count += 1
+
+        # Inspect unresolved high-priority facts to guide intake
+        if isinstance(existing_case_state, dict):
+            try:
+                curr_ucs = UniversalCaseState(**existing_case_state)
+            except Exception:
+                curr_ucs = UniversalCaseState()
+        else:
+            curr_ucs = existing_case_state or UniversalCaseState()
+
+        missing_facts = self._fallback_engine.evaluate_missing_facts(curr_ucs)
+        high_missing = [
+            {"fact_key": m.fact_key, "question": m.sample_question, "reason": m.reason}
+            for m in missing_facts if m.legal_importance == "HIGH"
         ]
-        user_turn_count = sum(1 for m in state.messages if m.role == MessageRole.USER)
 
         user_prompt_content = {
             "mode": state.mode.value,
@@ -249,14 +275,15 @@ class OpenAIIntakeService:
                 k: v for k, v in state.facts.items() if k != "case_state"
             },
             "current_case_state": existing_case_state,
+            "unresolved_high_priority_legal_questions": high_missing,
             "previous_assistant_questions": previous_assistant_questions,
             "conversation_history": conversation_history,
             "latest_user_message": latest_user_message,
             "guidelines": (
                 "1. Distinguish facts vs legal hypotheses.\n"
                 "2. Spot all legal issues (multiple simultaneous issues).\n"
-                "3. Rank missing facts by legal information value.\n"
-                "4. If Turn >= 3 or sufficient facts are established to advise on legal options, set is_ready_for_qa = true.\n"
+                "3. If unresolved_high_priority_legal_questions are present, formulate your follow-up around the top unresolved question to split the legal regime!\n"
+                "4. Only set is_ready_for_qa = true when the key legal branches/prerequisites are resolved (or if user demanded advice).\n"
                 "5. Never ask about information already established."
             ),
         }
@@ -413,7 +440,12 @@ Respond ONLY with a valid JSON object matching this structure:
 
         # Build UniversalCaseState
         case_info = parsed.get("case") or {}
-        domain = case_info.get("domain") or extracted_facts.get("detected_domain") or "general"
+        existing_domain = state.facts.get("detected_domain") or (
+            state.facts.get("case_state", {}).get("case_domain")
+            if isinstance(state.facts.get("case_state"), dict)
+            else None
+        )
+        domain = case_info.get("domain") or extracted_facts.get("detected_domain") or existing_domain or "general"
         extracted_facts["detected_domain"] = domain
 
         jur_data = parsed.get("jurisdiction") or {}
@@ -515,13 +547,23 @@ Respond ONLY with a valid JSON object matching this structure:
         # Mode & Turn Safety Enforcement
         if state.mode in (Mode.READABLE, Mode.INFORMATIVE):
             is_ready = True
-            followup = None
         elif state.mode == Mode.ACTIONABLE:
-            user_msg_count = sum(1 for m in state.messages if m.role == MessageRole.USER)
-            user_messages = [m.content.lower() for m in state.messages if m.role == MessageRole.USER]
+            user_msg_count = 0
+            user_messages = []
+            previous_questions_lower = []
+            for m in state.messages:
+                m_role = getattr(m, "role", None)
+                if isinstance(m, dict):
+                    m_role = m.get("role")
+                m_content = str(getattr(m, "content", "")) if hasattr(m, "content") else (str(m.get("content", "")) if isinstance(m, dict) else str(m))
+                if m_role in (MessageRole.USER, "user"):
+                    user_msg_count += 1
+                    user_messages.append(m_content.lower())
+                elif m_role in (MessageRole.ASSISTANT, "assistant"):
+                    previous_questions_lower.append(m_content.strip().lower())
+
             latest_msg = user_messages[-1] if user_messages else ""
 
-            # Check if user demanded immediate advice
             user_demanded_advice = any(
                 phrase in latest_msg
                 for phrase in [
@@ -531,12 +573,9 @@ Respond ONLY with a valid JSON object matching this structure:
                 ]
             )
 
-            # Deduplication Guard
-            previous_questions_lower = [
-                m.content.strip().lower()
-                for m in state.messages
-                if m.role == MessageRole.ASSISTANT
-            ]
+            # Re-evaluate missing facts with the updated universal_state
+            missing_after = self._fallback_engine.evaluate_missing_facts(universal_state)
+            high_priority_missing = [m for m in missing_after if m.legal_importance == "HIGH"]
 
             is_duplicate = False
             if followup:
@@ -572,19 +611,25 @@ Respond ONLY with a valid JSON object matching this structure:
                             is_duplicate = True
                             break
 
-            if is_duplicate:
-                logger.warning("Duplicate question detected: '%s'. Overriding.", followup)
-                if user_msg_count >= 2:
+            # PROGRAMMATIC READINESS GATE:
+            if not is_ready:
+                # LLM determined more info is needed
+                if not followup or is_duplicate:
+                    if high_priority_missing:
+                        top_missing = high_priority_missing[0]
+                        reason_text = f"\n*(Why this matters: {top_missing.reason})*" if top_missing.reason else ""
+                        followup = f"{top_missing.sample_question}{reason_text}"
+            else:
+                # LLM claimed it is ready:
+                # Only block if it is Turn 1 without a synthesized query and high-priority facts are still missing
+                if not synthesized_query and not user_demanded_advice and user_msg_count < 2 and high_priority_missing:
+                    is_ready = False
+                    top_missing = high_priority_missing[0]
+                    reason_text = f"\n*(Why this matters: {top_missing.reason})*" if top_missing.reason else ""
+                    followup = f"{top_missing.sample_question}{reason_text}"
+                else:
                     is_ready = True
                     followup = None
-                else:
-                    followup = self._fallback_engine.select_highest_value_question(universal_state)
-                    is_ready = False
-
-            elif user_demanded_advice or user_msg_count >= 3:
-                # Turn cap / user request: deliver actionable legal guidance!
-                is_ready = True
-                followup = None
 
         if is_ready:
             followup = None

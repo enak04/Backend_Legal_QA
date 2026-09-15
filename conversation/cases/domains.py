@@ -149,7 +149,26 @@ class DomainRegistry:
             self._extension_map[domain_def.name.lower()] = extension_cls
 
     def get(self, name: str) -> DomainDefinition | None:
-        return self._domains.get(name.lower())
+        if not name:
+            return None
+        norm = name.lower()
+        if any(w in norm for w in ["employ", "wage", "salary", "labor", "labour"]):
+            norm = "employment"
+        elif any(w in norm for w in ["tenant", "evict", "landlord", "rent", "property"]):
+            norm = "property"
+        elif any(w in norm for w in ["cyber", "online_scam"]):
+            norm = "cybercrime"
+        elif "consumer" in norm:
+            norm = "consumer"
+        elif any(w in norm for w in ["crime", "crim"]):
+            norm = "criminal"
+        elif any(w in norm for w in ["divorce", "matrimon", "custody", "family"]):
+            norm = "family"
+        elif any(w in norm for w in ["contract", "debt", "loan", "money"]):
+            norm = "contract"
+        elif any(w in norm for w in ["govt", "government", "admin", "rti"]):
+            norm = "government"
+        return self._domains.get(norm)
 
     def list_domains(self) -> list[DomainDefinition]:
         return list(self._domains.values())
