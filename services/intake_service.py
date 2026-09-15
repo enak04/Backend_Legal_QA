@@ -664,8 +664,8 @@ Respond ONLY with a valid JSON object matching this structure:
                 is_duplicate = self._is_question_duplicate(followup, previous_questions_lower)
 
             # PROGRAMMATIC READINESS GATE:
-            # 1. Hard Turn Cap (5 user turns), user explicitly demanded advice, or non-actionable mode -> MUST be ready!
-            if user_demanded_advice or user_msg_count >= 5 or state.mode in (Mode.INFORMATIVE, Mode.READABLE):
+            # Fully dynamic and conversational: adapts to dialogue flow with no artificial turn constraints
+            if user_demanded_advice or state.mode in (Mode.INFORMATIVE, Mode.READABLE):
                 is_ready = True
                 followup = None
             else:
@@ -674,21 +674,13 @@ Respond ONLY with a valid JSON object matching this structure:
                     if not self._is_question_duplicate(m.sample_question, previous_questions_lower)
                 ]
 
-                # If the LLM decided it has sufficient facts and synthesized the query:
+                # If the LLM determined it has sufficient facts and synthesized the query:
                 if parsed.get("is_ready_for_qa") and parsed.get("synthesized_query") and not followup:
-                    # In Turn 1: only intervene if user gave virtually zero context (no location and < 15 words):
-                    has_basic_location = bool(universal_state.jurisdiction.state or universal_state.jurisdiction.city)
-                    if user_msg_count <= 1 and not has_basic_location and len(all_user_text.split()) < 15:
-                        is_ready = False
-                        if unasked:
-                            top_missing = unasked[0]
-                            followup = f"{top_missing.sample_question}\n*(Why this matters: {top_missing.reason})*" if top_missing.reason else top_missing.sample_question
-                    else:
-                        # User has provided context or this is Turn 2+ where user responded: respect LLM's readiness!
-                        is_ready = True
-                        followup = None
+                    # Respect the LLM's dynamic determination of factual sufficiency
+                    is_ready = True
+                    followup = None
                 else:
-                    # LLM determined more info is needed or formulated a follow-up:
+                    # LLM determined more info is needed or formulated a conversational follow-up:
                     if followup and not is_duplicate and not parsed.get("is_ready_for_qa"):
                         is_ready = False
                     elif unasked:

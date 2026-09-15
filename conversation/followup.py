@@ -589,19 +589,9 @@ class FollowUpEngine:
             ]):
                 return True
 
-        # Turn Cap: if 5 or more user turns have elapsed, stop asking questions!
-        user_turns = len(user_messages)
-        if user_turns >= 5:
-            return True
-
-        # If turn == 1, ALWAYS ask at least 1 high-value question
-        if user_turns == 1:
-            return False
-
-        # If turn == 2: If core dimensions (jurisdiction + main issue + relationship) are known, we can answer!
+        # Factual sufficiency check:
+        # Dynamically adapts to factual completeness rather than rigid turn counts
         has_jurisdiction = bool(case_state.jurisdiction.state or case_state.jurisdiction.city)
-        has_core_facts = len(case_state.known_facts) >= 2 or bool(case_state.financial.amount or case_state.dates.incident_date)
-
         missing = self.evaluate_missing_facts(case_state)
         high_missing = [m for m in missing if m.legal_importance == "HIGH"]
 
