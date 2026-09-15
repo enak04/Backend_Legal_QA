@@ -137,10 +137,8 @@ class ConversationManager:
         case_state = get_universal_case_state(state)
 
         # 6. Check if more information is needed
-        if not intake_result.is_ready_for_qa:
-            followup_question = intake_result.followup_question or (
-                "Could you provide more details regarding your legal issue?"
-            )
+        if not intake_result.is_ready_for_qa and intake_result.followup_question:
+            followup_question = intake_result.followup_question
             add_assistant_message(state, followup_question)
             state.stage = ConversationStage.GATHERING_INFO
             await self._repo.update(state)
