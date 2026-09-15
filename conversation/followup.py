@@ -589,9 +589,9 @@ class FollowUpEngine:
             ]):
                 return True
 
-        # Turn Cap: if 3 or more user turns have elapsed, stop asking questions!
+        # Turn Cap: if 5 or more user turns have elapsed, stop asking questions!
         user_turns = len(user_messages)
-        if user_turns >= 3:
+        if user_turns >= 5:
             return True
 
         # If turn == 1, ALWAYS ask at least 1 high-value question

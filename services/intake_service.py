@@ -76,7 +76,7 @@ class IntakeAnalysisResult:
 
 INTAKE_BASE_SYSTEM_PROMPT = """\
 You are an expert, professional Indian Legal Intake Advocate conducting an initial client legal consultation.
-You handle all legal matters across Indian law (civil, criminal, property/tenancy, labor/employment, consumer, cybercrime, family, commercial, and constitutional law).
+You handle all legal matters across Indian law (civil, criminal, property/tenancy, labor/employment, consumer, cybercrime, family, commercial/contracts, and constitutional/administrative law).
 
 ### 1. PROFESSIONAL LEGAL INTAKE CONDUCT & TONE:
 - Communicate with the authority, precision, and empathy of a senior advocate.
@@ -86,36 +86,30 @@ You handle all legal matters across Indian law (civil, criminal, property/tenanc
   ❌ "Can you tell me more about what happened?"
 - EVERY question you ask MUST be grounded in a specific statutory prerequisite or procedural requirement under Indian law.
 - When asking a follow-up question, structure it as:
-  1. A brief, professional acknowledgment of the legal situation using correct legal concepts (e.g., unlawful dispossession, recovery of arrears, unfair trade practice).
-  2. Exactly ONE targeted legal question asking for specific missing factual variables (e.g., location/State, written agreement status, notice period, or monetary value).
+  1. A brief, professional acknowledgment of the legal situation using correct legal concepts (e.g., unlawful dispossession, recovery of arrears, unfair trade practice, cognizable complaint).
+  2. Exactly ONE targeted legal question asking for specific missing factual variables (e.g., location/State, written agreement status, notice period, or monetary value/loss).
   3. A concise, one-sentence legal explanation of WHY that specific fact determines the statutory remedy or jurisdiction.
 
-### 2. DOMAIN-SPECIFIC LEGAL INTAKE BLUEPRINTS:
-When a case domain is identified, focus strictly on the high-leverage legal variables:
-- **Property & Tenancy / Eviction**:
-  * Critical Facts Needed: State/City of property (Rent Control Acts are state-specific) AND whether there is a written lease/rental agreement.
-  * Secondary: Did the landlord serve a formal written 15-day notice under Section 106 of Transfer of Property Act, or was it a forceful lockout (actionable under Section 6 Specific Relief Act)?
-  * Standard Question: "Under Indian tenancy law, landlords cannot forcefully evict a tenant without following statutory due process. In which State or City is the property located, and do you have a written rental agreement?"
-- **Employment / Unpaid Wages / Wrongful Dismissal**:
-  * Critical Facts Needed: State/City of employment AND whether you have an appointment letter, salary slips, or written contract.
-  * Secondary: Approximate unpaid amount or duration of non-payment.
-  * Standard Question: "Under the Payment of Wages Act and State Shops & Establishments Acts, withholding salary or termination without due notice gives rise to statutory claims. In which State/City were you employed, and do you possess an appointment letter or pay slips?"
-- **Consumer Disputes & Defective Products/Services**:
-  * Critical Facts Needed: Total purchase/transaction value (determines District vs State Commission pecuniary jurisdiction) AND date of transaction (2-year limitation period under CPA 2019).
-  * Standard Question: "Under the Consumer Protection Act, 2019, you have remedies against unfair trade practices and deficiency in service. What was the total amount paid, and approximately when was this transaction completed?"
-- **Cybercrime & Unauthorized Banking Transactions**:
-  * Critical Facts Needed: When did the unauthorized transaction take place (RBI 72-hour zero-liability window), and have you alerted your bank or 1930?
-  * Standard Question: "Under RBI guidelines on customer liability in unauthorized electronic transactions, immediate reporting is time-critical. Exactly when did this transaction occur, and have you already filed a dispute with your bank or called 1930?"
-- **Commercial / Money Recovery / Contract Breach**:
-  * Critical Facts Needed: Written agreement / invoice / WhatsApp acknowledgment existence AND date of default (3-year limitation under Limitation Act, 1963).
-  * Standard Question: "To evaluate whether a summary recovery suit under Order 37 CPC or a statutory legal notice is appropriate: Do you have a written agreement, invoices, or written acknowledgment of the debt?"
+### 2. UNIVERSAL LEGAL INTAKE BLUEPRINTS (ACROSS ALL DOMAINS):
+Every legal matter in India requires establishing the core factual pillars before definitive remedies can be formulated:
+1. **Jurisdiction & Forum (State & City)**:
+   - State-specific statutes, local rent acts, consumer forum pecuniary benches, High Court writ jurisdiction, and police territorial limits strictly depend on location.
+2. **Parties & Legal Relationship**:
+   - Private employee vs Civil servant / PSU workman; Tenant vs Licensee; Consumer vs B2B commercial entity; Complainant vs Named Accused.
+3. **Monetary Quantum & Financial Harm**:
+   - Exact or approximate unpaid salary/dues, security deposit withheld, product price, financial fraud loss, or loan amount. Dictates pecuniary jurisdiction, Summary Suits under Order 37 CPC, and Payment of Wages Act applicability.
+4. **Documentary Proof & Evidentiary Foundation**:
+   - Written contract, offer/appointment letter, registered lease deed, tax invoice, bank/UPI statement, promissory note, police complaint/FIR, or termination/eviction notice.
+5. **Critical Timelines & Statutory Deadlines**:
+   - Date of termination/breach, limitation periods (e.g. 72-hour RBI zero-liability window for cyber fraud, 6 months for Section 6 Specific Relief Act, 2 years for Consumer Protection Act, 3 years for debt recovery under Limitation Act).
 
-### 3. CONVERSATION EFFICIENCY & TERMINATION RULE:
-- Ask a MAXIMUM of 1 to 2 focused legal intake questions in total.
-- NEVER ask more than 2 questions across the entire conversation.
-- As soon as the core issue, relevant domain, and key factual context (e.g. why eviction happened or state/contract) are identified, set `is_ready_for_qa = true` so the system can deliver the comprehensive legal answer.
-- If the client answers your question or if sufficient facts exist to provide statutory guidance, immediately set `is_ready_for_qa = true`, `followup_question = null`.
-- NEVER generate generic or empty follow-ups. If no specific statutory variable is missing, proceed directly to `is_ready_for_qa = true`.
+### 3. CONVERSATION PROTOCOL & READINESS RULES:
+- Systematically gather the missing high-priority factual dimensions one question at a time.
+- If high-priority legal questions remain unresolved (such as location, financial dues/loss, or documentation), formulate your follow-up to capture that missing dimension.
+- Do NOT set `is_ready_for_qa = true` prematurely while core factual pillars remain completely unknown, UNLESS:
+  * The user explicitly demands immediate advice or asks to skip questions.
+  * The query is an informative / conceptual legal question (e.g. "What is Section 138 NI Act?", "Explain bail provisions under BNSS"), in which case set `is_ready_for_qa = true` immediately.
+- Once the essential pillars of the case are established (or 4 to 5 turns have elapsed), set `is_ready_for_qa = true` and provide a comprehensive synthesized query for legal remedy generation.
 
 ### 4. FACTS VS LEGAL HYPOTHESES:
 - Maintain strict distinction between client-stated facts and spotted legal hypotheses.
@@ -677,8 +671,8 @@ Respond ONLY with a valid JSON object matching this structure:
                 is_duplicate = self._is_question_duplicate(followup, previous_questions_lower)
 
             # PROGRAMMATIC READINESS GATE:
-            # 1. Hard Turn Cap (5 user turns) or user explicitly demanded advice -> MUST be ready!
-            if user_demanded_advice or user_msg_count >= 5:
+            # 1. Hard Turn Cap (5 user turns), user explicitly demanded advice, or non-actionable mode -> MUST be ready!
+            if user_demanded_advice or user_msg_count >= 5 or state.mode in (Mode.INFORMATIVE, Mode.READABLE):
                 is_ready = True
                 followup = None
             else:
@@ -687,29 +681,40 @@ Respond ONLY with a valid JSON object matching this structure:
                     if not self._is_question_duplicate(m.sample_question, previous_questions_lower)
                 ]
 
-                # Check if financial dues/amount is mandatory for this domain and still missing/unasked
-                financial_domains = {"employment", "property", "consumer", "contract"}
-                financial_missing = (
-                    domain in financial_domains
-                    and not (universal_state.financial.amount or universal_state.financial.amount_raw or universal_state.financial.dues_period)
-                    and any("dues" in m.fact_key or "amount" in m.fact_key or "rent" in m.fact_key for m in unasked)
+                # 1. Check if jurisdiction (state/city) is missing
+                has_jurisdiction = bool(universal_state.jurisdiction.state or universal_state.jurisdiction.city)
+                jurisdiction_missing = not has_jurisdiction and any(
+                    "jurisdiction" in m.fact_key.lower() or "state" in m.fact_key.lower() for m in unasked
                 )
 
-                # Check core pillar facts: jurisdiction & sector/employment_type
-                jurisdiction_missing = not (universal_state.jurisdiction.state or universal_state.jurisdiction.city) and any("jurisdiction" in m.fact_key or "state" in m.fact_key for m in unasked)
-                sector_missing = domain == "employment" and not extracted_facts.get("employment_type") and any("employment_type" in m.fact_key for m in unasked)
+                # 2. Check if financial quantum / dues / loss is critical for this specific case
+                # Monetary claims (wages, severance, debt recovery, cyber fraud, consumer refund, deposit withholding) require financial info
+                monetary_keywords = ("wage", "salary", "termination", "fired", "money", "loan", "debt", "fraud", "deposit", "refund", "cheque", "invoice")
+                issue_text = f"{universal_state.case_type or ''} {extracted_facts.get('core_issue', '')}".lower()
+                is_monetary_case = any(w in issue_text for w in monetary_keywords) or domain in ("contract", "cybercrime")
+                has_financial_fact = bool(universal_state.financial.amount or universal_state.financial.amount_raw or universal_state.financial.dues_period)
+                financial_missing = is_monetary_case and not has_financial_fact and any(
+                    any(k in m.fact_key.lower() for k in ("amount", "due", "dues", "loss", "salary", "wage", "deposit", "rent", "price"))
+                    for m in unasked
+                )
 
-                critical_missing = financial_missing or jurisdiction_missing or sector_missing
+                # 3. Check primary relationship / status (e.g. employment_type in employment, marriage law in family)
+                relationship_or_status_missing = any(
+                    m.fact_key in ("employment_type", "personal_law_and_marriage_status")
+                    for m in unasked
+                )
+
+                critical_missing = jurisdiction_missing or financial_missing or relationship_or_status_missing
 
                 if critical_missing:
                     # Intake cannot finish without core factual dimensions
                     is_ready = False
                     if not followup or is_duplicate or parsed.get("is_ready_for_qa"):
-                        # Pick the critical missing question (prioritize financial dues if jurisdiction/sector known)
+                        # Prioritize: jurisdiction -> relationship/status -> financial dues
                         crit_fact = next(
-                            (m for m in unasked if (financial_missing and ("dues" in m.fact_key or "amount" in m.fact_key or "rent" in m.fact_key))
-                             or (jurisdiction_missing and ("jurisdiction" in m.fact_key or "state" in m.fact_key))
-                             or (sector_missing and "employment_type" in m.fact_key)),
+                            (m for m in unasked if (jurisdiction_missing and ("jurisdiction" in m.fact_key.lower() or "state" in m.fact_key.lower()))
+                             or (relationship_or_status_missing and m.fact_key in ("employment_type", "current_possession_status", "police_report_status", "personal_law_and_marriage_status", "agreement_form", "purchase_date_and_warranty"))
+                             or (financial_missing and any(k in m.fact_key.lower() for k in financial_keywords))),
                             unasked[0]
                         )
                         reason_text = f"\n*(Why this matters: {crit_fact.reason})*" if crit_fact.reason else ""
@@ -723,7 +728,6 @@ Respond ONLY with a valid JSON object matching this structure:
                         followup = f"{top_missing.sample_question}{reason_text}"
                 else:
                     # Core pillars satisfied or unasked is empty:
-                    # If LLM provided a valid, non-duplicate follow-up (e.g. summary confirmation), respect it:
                     if followup and not is_duplicate and not parsed.get("is_ready_for_qa"):
                         is_ready = False
                     else:
@@ -736,18 +740,25 @@ Respond ONLY with a valid JSON object matching this structure:
                 jurisdiction_str = universal_state.jurisdiction.state or extracted_facts.get("state") or "India"
                 city_str = universal_state.jurisdiction.city or extracted_facts.get("city") or ""
                 loc_full = f"{city_str}, {jurisdiction_str}".strip(", ")
-                emp_type = extracted_facts.get("employment_type") or universal_state.domain_extensions.get("employment", {}).get("employment_type") or ""
-                core_issue = universal_state.case_type or extracted_facts.get("core_issue") or "wrongful termination"
+                core_issue = universal_state.case_type or extracted_facts.get("core_issue") or (universal_state.issues[0].issue if universal_state.issues else "legal dispute")
                 dues_str = universal_state.financial.amount_raw or (f"₹{universal_state.financial.amount:,.0f}" if universal_state.financial.amount else universal_state.financial.dues_period) or ""
-                dues_line = f"  - Pending Dues / Amount: {dues_str}\n" if dues_str else ""
                 initial_statement = user_messages[0] if user_messages else ""
+
+                fact_bullets = [
+                    f"  - Jurisdiction: {loc_full}",
+                    f"  - Core Issue: {core_issue}",
+                ]
+                if dues_str:
+                    fact_bullets.append(f"  - Monetary Quantum / Dues: {dues_str}")
+                for k, v in extracted_facts.items():
+                    if k not in {"state", "city", "core_issue", "detected_domain", "amount", "amount_raw", "dues_period"}:
+                        fact_bullets.append(f"  - {k.replace('_', ' ').title()}: {v}")
+
+                facts_block = "\n".join(fact_bullets)
                 synthesized_query = (
                     f"Client's legal concern: {initial_statement}\n\n"
                     f"Relevant details established:\n"
-                    f"  - Jurisdiction: {loc_full}\n"
-                    f"  - Core Issue: {core_issue}\n"
-                    f"  - Sector/Type: {emp_type or 'unspecified'}\n"
-                    f"{dues_line}\n"
+                    f"{facts_block}\n\n"
                     f"Spotted legal issues:\n"
                     f"  - {core_issue}\n\n"
                     f"Address the recipient directly as 'you' in second person. Based on the above, what direct actionable "

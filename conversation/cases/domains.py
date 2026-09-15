@@ -403,6 +403,12 @@ class DomainRegistry:
                 emergency_relief="Dial 1930 (National Cybercrime Helpline) immediately and report on cybercrime.gov.in. Notify your bank within 72 hours in writing.",
                 high_value_questions=[
                     {
+                        "fact_key": "financial_loss",
+                        "importance": "HIGH",
+                        "reason": "Determines police cyber cell jurisdiction threshold and compensation claim under IT Act",
+                        "question": "What was the total amount debited or lost, and from which bank account or wallet?",
+                    },
+                    {
                         "fact_key": "transaction_date_and_time",
                         "importance": "HIGH",
                         "reason": "RBI rules grant ZERO liability if reported to the bank within 3 calendar days of unauthorized debit",
