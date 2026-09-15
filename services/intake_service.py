@@ -68,26 +68,31 @@ You are capable of handling ANY legal question or scenario across the ENTIRE spe
 
 ### 3. CONVERSATIONAL FLOW & NEVER FORCE INFORMATION:
 - **Never Interrogate or Badger**:
-  - If the user says "I don't know", "I don't have it", "No proof", or gives an unrelated answer:
-    - NEVER repeat or rephrase the question.
-    - NEVER insist or demand the user provide what they don't have.
-    - Reassure the user warmly (e.g., explaining that oral agreements, emails, and WhatsApp/UPI trails are valid evidence under Indian law).
-    - Mark the item as unavailable and move forward with the facts you have.
-- **Single Best Next Question**:
+  - If the user says "I don't know", "I don't have it", "No proof", "He just said you are fired nothing else", "No clauses", or gives a short/curt reply:
+    - **NEVER repeat, rephrase, or probe the same topic again.**
+    - Accept it as a definitive, established fact (e.g., "No verbal agreements or discussions occurred; termination was unilateral and oral", "No termination clauses exist in contract").
+    - Remove the item permanently from `missing_information`—it is not missing, it simply does not exist.
+    - Reassure the user warmly and acknowledge the legal implications under Indian law.
+    - Move forward immediately to a new aspect or proceed to remedies.
+- **Single Best Next Question & No Duplicates**:
   - Ask at most ONE natural question at a time.
-  - Never repeat a question that was already asked or answered.
-  - If the user pivots, goes off on a tangent, or shares an emotional reaction, engage with what they actually said as a human lawyer would.
+  - **STRICTLY PROHIBITED**: NEVER ask any question that has already been asked, rephrase an asked question, or re-open an already answered topic.
+  - If the user pivots, shares an emotional reaction, or reports serious violations (e.g., racial discrimination, harassment, sudden eviction, or withholding of wages):
+    - Acknowledge and validate the legal significance of that violation under Indian law (e.g. Karnataka Shops & Establishments Act, 1961 Section 39; Payment of Wages Act; Constitutional protections).
+    - Do NOT ignore it or jump back to an irrelevant standard question.
 
 ### 4. CONVERSATION MODES & RESOLUTION:
 - **ACTIONABLE MODE (Conversational Legal Intake & Remedies)**:
   - In this mode, the user chose to have a CONVERSATION.
   - Your primary goal is interactive conversational discovery: understanding the scenario, explaining rights/statutes, clarifying missing critical facts, and helping them formulate an action plan.
-  - In initial turns (Turns 1-3), `is_ready_for_qa` MUST BE `false` as long as key facts, timeline, or evidence remain to be clarified.
+  - In initial turns (Turns 1-3), `is_ready_for_qa` MUST BE `false` as long as key facts remain unclarified.
   - In `followup_question`, ALWAYS provide immediate substantive legal context first (reassurance, rights under Indian law), and then ask ONE natural, relevant next question.
-  - Only set `is_ready_for_qa = true` when:
-    (a) You have conducted a multi-turn conversation and clarified the core facts, OR
-    (b) You provide a concise factual summary and the user confirms it, OR
-    (c) The user explicitly states they have provided all info and asks for final advice/action plan.
+  - **TURN CAP & RESOLUTION (CRITICAL)**: 
+    - Do NOT keep asking questions indefinitely! Once the user has answered 3 to 4 turns, or once the core facts (who, what, state/jurisdiction, amount/unpaid wages, and termination circumstance) are established:
+    - STOP asking further questions.
+    - Set `is_ready_for_qa = true`.
+    - Synthesize a comprehensive query detailing all facts, timeline, statutory violations, and desired relief to deliver the complete actionable legal remedy.
+  - Also set `is_ready_for_qa = true` whenever the user explicitly states they have provided all info or asks for the final advice/remedy.
 - **INFORMATIVE MODE**:
   - Explain legal concepts or sections. Set `is_ready_for_qa = true` if the question is reasonably clear.
 - **READABLE MODE**:
@@ -177,31 +182,45 @@ class OpenAIIntakeService:
             role = "user" if msg.role == MessageRole.USER else "assistant"
             conversation_history.append({"role": role, "content": msg.content})
 
-        mode_instruction = (
-            "5. ACTIVE MODE IS ACTIONABLE (CONVERSATIONAL INTAKE): The user is having an interactive conversation. "
-            "You MUST converse with them! Do NOT set is_ready_for_qa = true on initial turns when facts/evidence are missing. "
-            "Set is_ready_for_qa = false, and in 'followup_question' provide immediate substantive legal context first (reassurance/rights) "
-            "and then ask ONE natural follow-up question to continue the dialogue."
-            if state.mode == Mode.ACTIONABLE
-            else f"5. ACTIVE MODE IS {state.mode.value.upper()}."
-        )
+        previous_assistant_questions = [
+            m.content for m in state.messages if m.role == MessageRole.ASSISTANT
+        ]
+        user_turn_count = sum(1 for m in state.messages if m.role == MessageRole.USER)
+
+        if state.mode == Mode.ACTIONABLE:
+            mode_instruction = (
+                f"5. ACTIVE MODE IS ACTIONABLE (CONVERSATIONAL INTAKE, User Turn #{user_turn_count}):\n"
+                "- ABSOLUTELY FORBIDDEN: You must NEVER repeat, rephrase, or ask about any topic already covered in 'previous_assistant_questions': "
+                f"{json.dumps(previous_assistant_questions)}.\n"
+                "- NEGATIVE/SHORT ANSWERS ARE FINAL FACTS: If the user said 'He just said you are fired nothing else', 'No clauses', 'None', or 'I don't know', "
+                "that means NO verbal discussions or clauses exist. Accept this as a confirmed fact, clear it from missing_information, and NEVER ask about it again!\n"
+                "- ACKNOWLEDGE SERIOUS WRONGS & DISCRIMINATION: If the user reported racial discrimination, unpaid wages, or termination without notice/cause, "
+                "validate its legal gravity under Indian law (e.g., Section 39 of the Karnataka Shops and Commercial Establishments Act, 1961; Payment of Wages Act).\n"
+                "- TURN CAP & RESOLUTION: If User Turn >= 3 and core facts (state/jurisdiction, nature of issue, unpaid wages/amounts, and termination circumstance) are established, "
+                "STOP asking questions! Set is_ready_for_qa = true and synthesize the full legal query for complete remedies. "
+                "Only if User Turn < 3 and critical facts are genuinely missing, ask ONE single new question on an unasked topic."
+            )
+        else:
+            mode_instruction = f"5. ACTIVE MODE IS {state.mode.value.upper()}."
 
         user_prompt_content = {
             "mode": state.mode.value,
+            "user_turn_number": user_turn_count,
             "existing_facts": {
                 k: v for k, v in state.facts.items() if k != "case_state"
             },
             "current_case_state": existing_case_state,
+            "previous_assistant_questions": previous_assistant_questions,
             "conversation_history": conversation_history,
             "latest_user_message": latest_user_message,
             "turn_instructions": (
-                "CRITICAL INSTRUCTIONS: "
+                "CRITICAL INSTRUCTIONS:\n"
                 "1. BROAD SPECTRUM OF QUESTIONS: This system handles ANY legal question across the entire spectrum of Indian law (general legal questions, concepts, rights, procedures, or dispute cases). "
-                "Do NOT treat this as a narrow case-by-case intake form. ALWAYS provide immediate substantive legal clarity, rights, and relevant provisions first before asking any question. "
-                "2. YOU ARE THE LEGAL PLATFORM. NEVER tell the user to 'seek legal advice', 'consult an attorney', or 'hire a lawyer'. "
-                "3. NEVER ask naive, patronizing questions like 'Have you considered asking your employer/other party for clarification?'. "
+                "ALWAYS provide immediate substantive legal clarity, rights, and relevant provisions first before asking any question.\n"
+                "2. YOU ARE THE LEGAL PLATFORM. NEVER tell the user to 'seek legal advice', 'consult an attorney', or 'hire a lawyer'.\n"
+                "3. NEVER ask naive, patronizing questions like 'Have you considered asking your employer/other party for clarification?'.\n"
                 "4. If the user indicates they don't have a document, don't know a detail, or replied with an off-topic/negative response, "
-                "DO NOT repeat or rephrase the previous question. Reassure the user, record it as unavailable, and ask about an entirely different topic or move to summarize. "
+                "DO NOT repeat or rephrase the previous question. Reassure the user, record it as unavailable, and move forward.\n"
                 f"{mode_instruction}"
             ),
         }
@@ -416,14 +435,60 @@ Respond ONLY with a valid JSON object matching this structure:
             followup = None
         elif state.mode == Mode.ACTIONABLE:
             # Actionable mode is a conversational intake flow.
-            # If the model produced a follow-up question, or if we are in early turns with missing info,
-            # we MUST preserve the conversation and NOT jump directly to the final QA answer.
             user_msg_count = sum(
                 1 for m in state.messages if m.role == MessageRole.USER
             )
             has_missing = bool(case_state.get("missing_information"))
 
+            # Deduplication Guard: Check if followup question repeats any previous question
+            previous_questions_lower = [
+                m.content.strip().lower()
+                for m in state.messages
+                if m.role == MessageRole.ASSISTANT
+            ]
+
+            is_duplicate = False
             if followup:
+                norm_followup = followup.strip().lower()
+                for prev in previous_questions_lower:
+                    if norm_followup in prev or prev in norm_followup:
+                        is_duplicate = True
+                        break
+                    # Key phrase overlap checks
+                    for kw in [
+                        "verbal agreement",
+                        "verbal discussions",
+                        "written contract",
+                        "appointment letter",
+                        "which state",
+                        "unpaid salary",
+                    ]:
+                        if kw in norm_followup and kw in prev:
+                            is_duplicate = True
+                            break
+                    if is_duplicate:
+                        break
+
+            if is_duplicate:
+                logger.warning(
+                    "Detected duplicate follow-up question: '%s'. Overriding duplicate.",
+                    followup,
+                )
+                if user_msg_count >= 3:
+                    # User has answered across 3+ turns; finish intake and provide remedies!
+                    is_ready = True
+                    followup = None
+                else:
+                    followup = (
+                        "Understood. What specific relief or outcome are you looking to achieve "
+                        "(e.g., recovering your unpaid salary, seeking severance compensation, or sending a formal legal notice)?"
+                    )
+                    is_ready = False
+            elif user_msg_count >= 4:
+                # Turn cap: after 4 user messages, conclude intake to prevent interrogation loops
+                is_ready = True
+                followup = None
+            elif followup:
                 is_ready = False
             elif user_msg_count < 3 and has_missing:
                 is_ready = False
