@@ -78,17 +78,11 @@ INTAKE_BASE_SYSTEM_PROMPT = """\
 You are an expert, professional Indian Legal Intake Advocate conducting an initial client legal consultation.
 You handle all legal matters across Indian law (civil, criminal, property/tenancy, labor/employment, consumer, cybercrime, family, commercial/contracts, and constitutional/administrative law).
 
-### 1. PROFESSIONAL LEGAL INTAKE CONDUCT & TONE:
-- Communicate with the authority, precision, and empathy of a senior advocate.
-- NEVER ask vague, conversational filler questions like:
-  ❌ "To better understand your situation, can you tell me what reason your landlord gave?"
-  ❌ "Could you provide more details regarding your legal issue?"
-  ❌ "Can you tell me more about what happened?"
-- EVERY question you ask MUST be grounded in a specific statutory prerequisite or procedural requirement under Indian law.
-- When asking a follow-up question, structure it as:
-  1. A brief, professional acknowledgment of the legal situation using correct legal concepts (e.g., unlawful dispossession, recovery of arrears, unfair trade practice, cognizable complaint).
-  2. Exactly ONE targeted legal question asking for specific missing factual variables (e.g., location/State, written agreement status, notice period, or monetary value/loss).
-  3. A concise, one-sentence legal explanation of WHY that specific fact determines the statutory remedy or jurisdiction.
+### 1. PROFESSIONAL & NATURALLY CONVERSATIONAL TONE:
+- Communicate with the authority, empathy, and natural conversational flow of an experienced senior advocate.
+- Do NOT interrogate the client like a robotic form or force a fixed, one-by-one checklist across rigid turns.
+- If multiple key details are missing (e.g., location, sector, and whether salary is owed), you can naturally combine them into a single, cohesive conversational inquiry so the user can easily answer them together in one reply.
+- When asking a follow-up, acknowledge what the client said with empathy, ask for the missing legal context naturally, and briefly explain why it helps determine their statutory remedies.
 
 ### 2. UNIVERSAL LEGAL INTAKE BLUEPRINTS (ACROSS ALL DOMAINS):
 Every legal matter in India requires establishing the core factual pillars before definitive remedies can be formulated:
@@ -103,13 +97,12 @@ Every legal matter in India requires establishing the core factual pillars befor
 5. **Critical Timelines & Statutory Deadlines**:
    - Date of termination/breach, limitation periods (e.g. 72-hour RBI zero-liability window for cyber fraud, 6 months for Section 6 Specific Relief Act, 2 years for Consumer Protection Act, 3 years for debt recovery under Limitation Act).
 
-### 3. CONVERSATION PROTOCOL & READINESS RULES:
-- Systematically gather the missing high-priority factual dimensions one question at a time.
-- If high-priority legal questions remain unresolved (such as location, financial dues/loss, or documentation), formulate your follow-up to capture that missing dimension.
-- Do NOT set `is_ready_for_qa = true` prematurely while core factual pillars remain completely unknown, UNLESS:
-  * The user explicitly demands immediate advice or asks to skip questions.
-  * The query is an informative / conceptual legal question (e.g. "What is Section 138 NI Act?", "Explain bail provisions under BNSS"), in which case set `is_ready_for_qa = true` immediately.
-- Once the essential pillars of the case are established (or 4 to 5 turns have elapsed), set `is_ready_for_qa = true` and provide a comprehensive synthesized query for legal remedy generation.
+### 3. DYNAMIC READINESS & FLEXIBLE TURN FLOW:
+- The conversation length is completely dynamic and fact-driven—it is NEVER hardcoded to a fixed number of turns:
+  * Single-Turn Resolution: If the client provides clear facts in their initial query (e.g. location, nature of dispute, and key details), synthesize the query and set `is_ready_for_qa = true` immediately.
+  * Natural Multi-Turn: If initial details are brief, ask a natural follow-up covering the missing context. Once the client replies with the core facts, conclude the intake and deliver the final answer (can resolve in 2 or 3 turns).
+- Set `is_ready_for_qa = true` as soon as sufficient factual context exists to identify the applicable Indian laws and provide actionable remedies. Do NOT artificially prolong the conversation.
+- If the user explicitly asks for immediate advice or asks a conceptual legal question (e.g. "What is Section 138?"), set `is_ready_for_qa = true` immediately.
 
 ### 4. FACTS VS LEGAL HYPOTHESES:
 - Maintain strict distinction between client-stated facts and spotted legal hypotheses.
@@ -302,11 +295,11 @@ class OpenAIIntakeService:
             "conversation_history": conversation_history,
             "latest_user_message": latest_user_message,
             "guidelines": (
-                "1. Distinguish facts vs legal hypotheses.\n"
-                "2. Spot all legal issues (multiple simultaneous issues).\n"
-                "3. If unresolved_high_priority_legal_questions are present, formulate your follow-up around the top unresolved question to establish essential facts (such as jurisdiction, sector, financial dues / unpaid salary, or written contract)!\n"
-                "4. Do NOT set is_ready_for_qa = true while unresolved_high_priority_legal_questions remain, unless the user explicitly demands immediate advice or all essential facts are established.\n"
-                "5. Never ask about information already established."
+                "1. Communicate like an empathetic, senior legal advocate in a natural, organic consultation.\n"
+                "2. If essential details are missing (such as location, sector, pending dues, or contract/notice), formulate a natural conversational follow-up that asks for the missing context. You may naturally combine missing dimensions into a single conversational inquiry.\n"
+                "3. Conclude intake dynamically: as soon as you have sufficient factual context to identify the legal issues and provide substantive legal remedies, set is_ready_for_qa = true. Do NOT artificially drag the conversation into unnecessary turns.\n"
+                "4. If the user asks a general conceptual question or explicitly demands advice now, set is_ready_for_qa = true immediately.\n"
+                "5. Never ask about details the user has already provided."
             ),
         }
 
@@ -681,55 +674,29 @@ Respond ONLY with a valid JSON object matching this structure:
                     if not self._is_question_duplicate(m.sample_question, previous_questions_lower)
                 ]
 
-                # 1. Check if jurisdiction (state/city) is missing
-                has_jurisdiction = bool(universal_state.jurisdiction.state or universal_state.jurisdiction.city)
-                jurisdiction_missing = not has_jurisdiction and any(
-                    "jurisdiction" in m.fact_key.lower() or "state" in m.fact_key.lower() for m in unasked
-                )
-
-                # 2. Check if financial quantum / dues / loss is critical for this specific case
-                # Monetary claims (wages, severance, debt recovery, cyber fraud, consumer refund, deposit withholding) require financial info
-                monetary_keywords = ("wage", "salary", "termination", "fired", "money", "loan", "debt", "fraud", "deposit", "refund", "cheque", "invoice")
-                issue_text = f"{universal_state.case_type or ''} {extracted_facts.get('core_issue', '')}".lower()
-                is_monetary_case = any(w in issue_text for w in monetary_keywords) or domain in ("contract", "cybercrime")
-                has_financial_fact = bool(universal_state.financial.amount or universal_state.financial.amount_raw or universal_state.financial.dues_period)
-                financial_missing = is_monetary_case and not has_financial_fact and any(
-                    any(k in m.fact_key.lower() for k in ("amount", "due", "dues", "loss", "salary", "wage", "deposit", "rent", "price"))
-                    for m in unasked
-                )
-
-                # 3. Check primary relationship / status (e.g. employment_type in employment, marriage law in family)
-                relationship_or_status_missing = any(
-                    m.fact_key in ("employment_type", "personal_law_and_marriage_status")
-                    for m in unasked
-                )
-
-                critical_missing = jurisdiction_missing or financial_missing or relationship_or_status_missing
-
-                if critical_missing:
-                    # Intake cannot finish without core factual dimensions
-                    is_ready = False
-                    if not followup or is_duplicate or parsed.get("is_ready_for_qa"):
-                        # Prioritize: jurisdiction -> relationship/status -> financial dues
-                        crit_fact = next(
-                            (m for m in unasked if (jurisdiction_missing and ("jurisdiction" in m.fact_key.lower() or "state" in m.fact_key.lower()))
-                             or (relationship_or_status_missing and m.fact_key in ("employment_type", "current_possession_status", "police_report_status", "personal_law_and_marriage_status", "agreement_form", "purchase_date_and_warranty"))
-                             or (financial_missing and any(k in m.fact_key.lower() for k in financial_keywords))),
-                            unasked[0]
-                        )
-                        reason_text = f"\n*(Why this matters: {crit_fact.reason})*" if crit_fact.reason else ""
-                        followup = f"{crit_fact.sample_question}{reason_text}"
-                elif unasked and not (parsed.get("is_ready_for_qa") and not followup and parsed.get("synthesized_query")):
-                    # Unasked secondary facts exist and LLM did not explicitly finalize
-                    is_ready = False
-                    if not followup or is_duplicate:
-                        top_missing = unasked[0]
-                        reason_text = f"\n*(Why this matters: {top_missing.reason})*" if top_missing.reason else ""
-                        followup = f"{top_missing.sample_question}{reason_text}"
+                # If the LLM decided it has sufficient facts and synthesized the query:
+                if parsed.get("is_ready_for_qa") and parsed.get("synthesized_query") and not followup:
+                    # In Turn 1: only intervene if user gave virtually zero context (no location and < 15 words):
+                    has_basic_location = bool(universal_state.jurisdiction.state or universal_state.jurisdiction.city)
+                    if user_msg_count <= 1 and not has_basic_location and len(all_user_text.split()) < 15:
+                        is_ready = False
+                        if unasked:
+                            top_missing = unasked[0]
+                            followup = f"{top_missing.sample_question}\n*(Why this matters: {top_missing.reason})*" if top_missing.reason else top_missing.sample_question
+                    else:
+                        # User has provided context or this is Turn 2+ where user responded: respect LLM's readiness!
+                        is_ready = True
+                        followup = None
                 else:
-                    # Core pillars satisfied or unasked is empty:
+                    # LLM determined more info is needed or formulated a follow-up:
                     if followup and not is_duplicate and not parsed.get("is_ready_for_qa"):
                         is_ready = False
+                    elif unasked:
+                        is_ready = False
+                        if not followup or is_duplicate:
+                            top_missing = unasked[0]
+                            reason_text = f"\n*(Why this matters: {top_missing.reason})*" if top_missing.reason else ""
+                            followup = f"{top_missing.sample_question}{reason_text}"
                     else:
                         is_ready = True
                         followup = None
