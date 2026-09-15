@@ -73,6 +73,14 @@ class GroundedLegalAnswerGenerator:
         """True if an OpenAI client is available for LLM synthesis."""
         return self._client is not None
 
+    def build_assessment(
+        self,
+        case_state: UniversalCaseState,
+        authorities: list[RetrievedAuthority],
+    ) -> LegalAssessment:
+        """Build the structured LegalAssessment metadata."""
+        return self._build_assessment(case_state, authorities)
+
     async def generate_answer(
         self,
         case_state: UniversalCaseState,
