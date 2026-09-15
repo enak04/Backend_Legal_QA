@@ -30,7 +30,10 @@ from config import settings
 from conversation.followup import FollowUpEngine
 from conversation.manager import ConversationManager
 from database.repository import SQLiteConversationRepository, MongoDBConversationRepository
+from openai import AsyncOpenAI
+
 from legal_qa.client import LegalQAClient
+from legal_qa.grounded_generator import GroundedLegalAnswerGenerator
 from legal_qa.query_builder import QueryBuilder
 from services.intake_service import OpenAIIntakeService
 
@@ -91,6 +94,17 @@ async def lifespan(app: FastAPI):
             "OpenAI API key not configured; using deterministic rule engine."
         )
 
+    # Answer generator (LLM-powered when OpenAI is available)
+    openai_client = AsyncOpenAI(api_key=settings.openai_api_key) if settings.openai_api_key else None
+    answer_generator = GroundedLegalAnswerGenerator(
+        openai_client=openai_client,
+        model=settings.openai_model,
+    )
+    if answer_generator.is_configured:
+        logger.info("Answer generator using LLM synthesis (model=%s)", settings.openai_model)
+    else:
+        logger.info("Answer generator using template fallback (no OpenAI key)")
+
     # Conversation manager (the orchestrator)
     manager = ConversationManager(
         repository=repo,
@@ -98,6 +112,7 @@ async def lifespan(app: FastAPI):
         followup_engine=followup_engine,
         query_builder=query_builder,
         intake_service=intake_service,
+        answer_generator=answer_generator,
     )
 
     # Store on app state so routes can access it

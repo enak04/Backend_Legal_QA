@@ -1,24 +1,22 @@
 """
 Grounded Legal Answer Generator.
 
-Implements the standardized 8-part cross-domain legal guidance structure:
-  1. What I understand
-  2. Possible legal issues
-  3. What the applicable law appears to provide
-  4. Why it may apply
-  5. What you can do now (never re-recommending actions already taken)
-  6. Evidence/documents to preserve
-  7. Important deadlines/risks
-  8. When professional legal help is advisable
+Uses an LLM call (OpenAI) to synthesize a natural, concise, lawyer-like
+legal answer from structured case data and retrieved authorities.
 
-Ensures claims are grounded in retrieved authorities, addresses the client directly
-as 'You', and avoids false certainty.
+The structured LegalAssessment is still computed deterministically and
+returned as API metadata.  The user-facing answer is LLM-generated so
+it reads like advice from an experienced advocate — direct, empathetic,
+and concise — rather than a template dump.
 """
 
 from __future__ import annotations
 
 import logging
 from typing import Any
+
+from openai import AsyncOpenAI
+
 from conversation.cases.models import (
     LegalAssessment,
     RetrievedAuthority,
@@ -28,311 +26,348 @@ from conversation.cases.models import (
 logger = logging.getLogger(__name__)
 
 
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# System prompt for the answer-synthesis LLM call
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+ANSWER_SYSTEM_PROMPT = """\
+You are a senior Indian advocate providing clear, actionable legal guidance.
+
+### TONE & STYLE
+- Address the client directly in second person ("You", "Your employer").
+- Be warm but professional — like a trusted lawyer in a first consultation.
+- Be CONCISE. Do not dump every statute you know. Focus on what matters MOST for THIS specific case.
+- Use simple language a non-lawyer can understand. Explain legal terms when you first use them.
+- Never manufacture citations or case numbers you are not sure about.
+
+### STRUCTURE (use these exact headings)
+1. **Understanding Your Situation** — 2-3 sentences summarising what happened, in your own words.
+2. **Your Legal Position** — Which laws protect them, citing only the MOST relevant 2-3 statutes/provisions. Include the specific section and a one-line plain-English explanation. Skip any statute that does NOT directly apply to the facts.
+3. **What You Should Do Now** — Numbered, concrete, prioritised action steps (max 4-5 steps). Each step should say WHO does WHAT by WHEN.
+4. **Important Deadlines** — Only if there are actual time-sensitive deadlines relevant to this case. Skip this section if none apply.
+5. **Documents to Keep Safe** — Brief bullet list of evidence to preserve, specific to their case.
+6. **A Word of Caution** — 1-2 sentences noting any risks, gaps in their case, or when to definitely hire a lawyer.
+
+### RULES
+- Do NOT include statutes that are irrelevant to the established facts (e.g., don't cite cheque bounce law if no cheque is involved, don't cite gratuity act if tenure is unknown/under 5 years).
+- Do NOT assume jurisdiction (state/city) unless the client has explicitly stated it.
+- Do NOT repeat the same information in multiple sections.
+- Do NOT use phrases like "Hypothesis (70% confidence)" or "persuasive_context_only" — those are internal metadata, not client-facing language.
+- If retrieved precedents are relevant, weave their guidance naturally into your advice — do NOT dump raw case excerpts.
+- Keep the entire answer under 400 words. Quality over quantity.
+"""
+
+
 class GroundedLegalAnswerGenerator:
     """
-    Generates structured, source-grounded legal guidance across any Indian law domain.
+    Generates a natural, LLM-powered legal answer plus a structured
+    LegalAssessment from case state and retrieved authorities.
     """
 
-    def generate_answer(
+    def __init__(self, openai_client: AsyncOpenAI | None = None, model: str = "gpt-4o-mini") -> None:
+        self._client = openai_client
+        self._model = model
+
+    @property
+    def is_configured(self) -> bool:
+        """True if an OpenAI client is available for LLM synthesis."""
+        return self._client is not None
+
+    async def generate_answer(
         self,
         case_state: UniversalCaseState,
         authorities: list[RetrievedAuthority],
         base_qa_answer: str | None = None,
     ) -> tuple[str, LegalAssessment]:
         """
-        Synthesize the standardized 8-part legal guidance and return the formatted
-        answer string along with the structured LegalAssessment.
+        Synthesize a concise, lawyer-like legal answer via LLM and return
+        both the user-facing text and the structured LegalAssessment.
         """
-        domain = case_state.case_domain or case_state.primary_category or "General Legal Dispute"
+        # 1. Build the structured LegalAssessment (deterministic — always computed)
+        assessment = self._build_assessment(case_state, authorities)
 
-        # 1. Facts extraction for "What I understand"
-        facts_summary = self._summarize_facts(case_state)
+        # 2. Build the context message for the LLM
+        context = self._build_context_message(case_state, authorities, base_qa_answer)
 
-        # 2. Issues & Hypotheses
-        issues_section = self._format_issues(case_state)
+        # 3. Call LLM to generate natural answer
+        if self.is_configured:
+            try:
+                answer = await self._call_llm(context)
+            except Exception as exc:
+                logger.warning(
+                    "LLM answer synthesis failed (%s); falling back to template.",
+                    exc,
+                )
+                answer = self._fallback_template(case_state, authorities, assessment)
+        else:
+            logger.info("No OpenAI client configured for answer generator; using template fallback.")
+            answer = self._fallback_template(case_state, authorities, assessment)
 
-        # 3. Applicable Law
-        law_section, claims = self._format_law(authorities, base_qa_answer)
+        return answer, assessment
 
-        # 4. Applicability Analysis
-        applicability_section = self._format_applicability(case_state, authorities)
+    # ── LLM Call ──────────────────────────────────────────────────
 
-        # 5. Action Plan (filtering actions already taken!)
-        actions_section, action_plan = self._format_actions(case_state, domain)
+    async def _call_llm(self, context_message: str) -> str:
+        """Make the actual OpenAI chat completion call."""
+        response = await self._client.chat.completions.create(
+            model=self._model,
+            messages=[
+                {"role": "system", "content": ANSWER_SYSTEM_PROMPT},
+                {"role": "user", "content": context_message},
+            ],
+            temperature=0.3,
+            max_tokens=1200,
+        )
+        return response.choices[0].message.content.strip()
 
-        # 6. Evidence Preservation
-        evidence_section = self._format_evidence(case_state)
+    # ── Context Builder ───────────────────────────────────────────
 
-        # 7. Deadlines & Risks
-        deadlines_section, risks_list = self._format_deadlines_and_risks(case_state, authorities)
+    def _build_context_message(
+        self,
+        state: UniversalCaseState,
+        authorities: list[RetrievedAuthority],
+        base_qa_answer: str | None = None,
+    ) -> str:
+        """
+        Build a structured context message that gives the LLM everything
+        it needs to produce a grounded answer.
+        """
+        parts: list[str] = []
 
-        # 8. Professional Legal Help
-        advisory_section = self._format_professional_advisory(case_state)
+        # Client facts
+        parts.append("## CLIENT FACTS")
+        if state.summary:
+            parts.append(f"Summary: {state.summary}")
 
-        # Assemble full 8-part markdown text
-        parts = [
-            f"### 1. What I Understand\n{facts_summary}",
-            f"### 2. Possible Legal Issues\n{issues_section}",
-            f"### 3. What the Applicable Law Appears to Provide\n{law_section}",
-            f"### 4. Why It May Apply to Your Situation\n{applicability_section}",
-            f"### 5. What You Can Do Now\n{actions_section}",
-            f"### 6. Evidence & Documents to Preserve\n{evidence_section}",
-            f"### 7. Important Deadlines & Risks\n{deadlines_section}",
-            f"### 8. When Professional Legal Help Is Advisable\n{advisory_section}",
+        active_facts = [f for f in state.known_facts if not f.get("superseded", False)]
+        if active_facts:
+            parts.append("Established facts:")
+            for f in active_facts:
+                fact_text = f.get("fact") if isinstance(f, dict) else str(f)
+                parts.append(f"  - {fact_text}")
+
+        # Jurisdiction
+        if state.jurisdiction.state or state.jurisdiction.city:
+            loc = ", ".join(filter(None, [
+                state.jurisdiction.city,
+                state.jurisdiction.state,
+                state.jurisdiction.country,
+            ]))
+            parts.append(f"Jurisdiction: {loc}")
+        else:
+            parts.append("Jurisdiction: India (state/city NOT specified by client)")
+
+        # Financial
+        if state.financial.amount_raw or state.financial.amount:
+            amt = state.financial.amount_raw or f"₹{state.financial.amount:,.2f}"
+            parts.append(f"Financial claim: {amt}")
+
+        # Dates
+        if state.dates.incident_date:
+            parts.append(f"Incident date: {state.dates.incident_date}")
+
+        # User goal
+        if state.user_goal:
+            parts.append(f"Client's stated goal: {state.user_goal}")
+
+        # Issues
+        parts.append("\n## IDENTIFIED LEGAL ISSUES")
+        active_issues = [i for i in state.issues if i.status != "ruled_out"]
+        if active_issues:
+            for issue in active_issues:
+                status = "confirmed" if issue.status == "confirmed" else "likely"
+                laws_str = ", ".join(issue.applicable_laws) if issue.applicable_laws else "to be determined"
+                parts.append(f"  - {issue.issue} ({status}) — under: {laws_str}")
+        else:
+            parts.append(f"  - {state.case_type or 'General legal dispute'}")
+
+        # Applicable statutes (only statutory authorities)
+        statutory = [a for a in authorities if a.authority_type != "precedent"]
+        if statutory:
+            parts.append("\n## APPLICABLE STATUTES (use only what's relevant)")
+            for auth in statutory:
+                conditions = ", ".join(auth.applicability_conditions) if auth.applicability_conditions else "general"
+                parts.append(
+                    f"  - {auth.source}, {auth.provision}: {auth.relevance}\n"
+                    f"    Key rule: \"{auth.key_excerpt}\"\n"
+                    f"    Applies if: {conditions}"
+                )
+
+        # Precedents
+        precedents = [a for a in authorities if a.authority_type == "precedent"]
+        if precedents:
+            parts.append("\n## RETRIEVED PRECEDENTS (use only if directly relevant)")
+            for p in precedents:
+                parts.append(f"  - {p.source} ({p.jurisdiction}): {p.key_excerpt[:200]}")
+
+        # Base QA model answer (if available)
+        if base_qa_answer:
+            parts.append(f"\n## BASE MODEL GUIDANCE\n{base_qa_answer[:500]}")
+
+        # Actions already taken
+        if state.actions_already_taken:
+            parts.append("\n## ACTIONS CLIENT HAS ALREADY TAKEN")
+            for a in state.actions_already_taken:
+                parts.append(f"  - {a.action}")
+
+        # Risk flags
+        if state.risk.flags:
+            parts.append(f"\n## URGENCY: {state.risk.level.upper()}")
+            if state.risk.reason:
+                parts.append(f"Reason: {state.risk.reason}")
+            if state.risk.recommended_emergency_action:
+                parts.append(f"Emergency action: {state.risk.recommended_emergency_action}")
+
+        parts.append(
+            "\n## INSTRUCTION\n"
+            "Based on the above, provide your legal guidance to the client. "
+            "Be concise, direct, and actionable. Only cite statutes that ACTUALLY "
+            "apply to the established facts. Skip irrelevant authorities."
+        )
+
+        return "\n".join(parts)
+
+    # ── Structured Assessment Builder ─────────────────────────────
+
+    def _build_assessment(
+        self,
+        state: UniversalCaseState,
+        authorities: list[RetrievedAuthority],
+    ) -> LegalAssessment:
+        """Build the structured LegalAssessment for API metadata."""
+        domain = state.case_domain or state.primary_category or "General Legal Dispute"
+
+        # Facts summary
+        facts_parts: list[str] = []
+        if state.summary:
+            facts_parts.append(f"- **Summary**: {state.summary}")
+        active_facts = [f for f in state.known_facts if not f.get("superseded", False)]
+        for f in active_facts:
+            fact_text = f.get("fact") if isinstance(f, dict) else str(f)
+            src = f.get("source", "user statement") if isinstance(f, dict) else "user statement"
+            facts_parts.append(f"- **Established Fact**: {fact_text} *(Source: {src})*")
+        if state.financial.amount_raw or state.financial.amount:
+            amt = state.financial.amount_raw or f"₹{state.financial.amount:,.2f}"
+            facts_parts.append(f"- **Financial Claim / Disputed Sum**: {amt}")
+        facts_summary = "\n".join(facts_parts) if facts_parts else "Based on your statements."
+
+        # Claims
+        claims = [
+            {
+                "authority": f"{auth.source} - {auth.provision}",
+                "jurisdiction": auth.jurisdiction,
+                "status": auth.status,
+            }
+            for auth in authorities
         ]
 
-        full_answer = "\n\n".join(parts)
+        # Action plan
+        action_plan = self._build_action_plan(state, domain)
 
-        assessment = LegalAssessment(
+        return LegalAssessment(
             summary=facts_summary,
             primary_domain=domain,
-            confirmed_issues=[i.issue for i in case_state.issues if i.status != "ruled_out"],
+            confirmed_issues=[i.issue for i in state.issues if i.status != "ruled_out"],
             applicable_authorities=authorities,
             evidence_assessment={
-                "provided_count": len(case_state.evidence),
-                "items": [e.model_dump() for e in case_state.evidence],
+                "provided_count": len(state.evidence),
+                "items": [e.model_dump() for e in state.evidence],
             },
             action_plan=action_plan,
-            limitations_and_risks=risks_list,
+            limitations_and_risks=[],
             claims=claims,
             ready_for_final_remedy=True,
         )
 
-        return full_answer, assessment
-
-    # ── Section Builders ──────────────────────────────────────────
-
-    def _summarize_facts(self, state: UniversalCaseState) -> str:
-        points: list[str] = []
-        if state.summary:
-            points.append(f"- **Summary**: {state.summary}")
-
-        active_facts = [f for f in state.known_facts if not f.get("superseded", False)]
-        if active_facts:
-            for f in active_facts:
-                fact_text = f.get("fact") if isinstance(f, dict) else str(f)
-                src = f.get("source", "user statement") if isinstance(f, dict) else "user statement"
-                points.append(f"- **Established Fact**: {fact_text} *(Source: {src})*")
-
-        if state.jurisdiction.state or state.jurisdiction.city:
-            loc = ", ".join(filter(None, [state.jurisdiction.city, state.jurisdiction.state, state.jurisdiction.country]))
-            points.append(f"- **Jurisdiction**: {loc}")
-
-        if state.financial.amount_raw or state.financial.amount:
-            amt = state.financial.amount_raw or f"₹{state.financial.amount:,.2f}"
-            points.append(f"- **Financial Claim / Disputed Sum**: {amt}")
-
-        if state.user_goal:
-            points.append(f"- **Your Stated Objective**: {state.user_goal}")
-
-        if not points:
-            points.append("- Based on your statements, you are seeking formal legal recourse and clarity on your statutory remedies under Indian law.")
-
-        return "\n".join(points)
-
-    def _format_issues(self, state: UniversalCaseState) -> str:
-        lines: list[str] = [
-            "Based on the facts you have shared, this matter may raise the following legal issues under Indian law:"
-        ]
-        active_issues = [i for i in state.issues if i.status != "ruled_out"]
-
-        if active_issues:
-            for issue in active_issues:
-                conf_label = "Confirmed" if issue.status == "confirmed" else f"Hypothesis ({int(issue.confidence * 100)}% confidence)"
-                laws = f" *(Applicable Framework: {', '.join(issue.applicable_laws)})*" if issue.applicable_laws else ""
-                lines.append(f"- **{issue.issue.title()}** [{conf_label}]{laws}")
-        elif state.case_type:
-            lines.append(f"- **{state.case_type.title()}** [Hypothesis: subject to verification of documentation]")
-        else:
-            lines.append("- **General Legal Dispute & Statutory Rights Violation** [Hypothesis]")
-
-        return "\n".join(lines)
-
-    def _format_law(
-        self,
-        authorities: list[RetrievedAuthority],
-        base_qa_answer: str | None = None,
-    ) -> tuple[str, list[dict[str, Any]]]:
-        lines: list[str] = []
-        claims: list[dict[str, Any]] = []
-
-        if authorities:
-            for auth in authorities:
-                if auth.authority_type == "precedent":
-                    lines.append(
-                        f"- **{auth.source}**:\n"
-                        f"  *Relevant Analogy*: {auth.key_excerpt}\n"
-                        f"  *(Note: This past case serves as persuasive guidance only and does not establish facts about your specific case.)*"
-                    )
-                else:
-                    lines.append(
-                        f"- **{auth.source} ({auth.provision})** [{auth.status.upper()}]:\n"
-                        f"  {auth.relevance}\n"
-                        f"  *Statutory Rule*: \"{auth.key_excerpt}\""
-                    )
-                claims.append({
-                    "authority": f"{auth.source} - {auth.provision}",
-                    "jurisdiction": auth.jurisdiction,
-                    "status": auth.status,
-                })
-        elif base_qa_answer:
-            lines.append(f"- **Statutory Guidance**: {base_qa_answer[:350]}...")
-        else:
-            lines.append("- Under general Indian civil and commercial jurisprudence, rights arising out of agreement, statutory employment protections, and tortious or criminal wrongs are governed by the relevant Central and State statutes.")
-
-        return "\n".join(lines), claims
-
-    def _format_applicability(
-        self,
-        state: UniversalCaseState,
-        authorities: list[RetrievedAuthority],
-    ) -> str:
-        lines: list[str] = []
-        lines.append(
-            "Connecting your factual statements to the statutory framework:"
-        )
-
-        if state.jurisdiction.state:
-            lines.append(f"- **State Jurisdiction**: Because the matter arose in **{state.jurisdiction.state}**, jurisdictional rules, forum thresholds, and state-specific amendments govern proceedings.")
-
-        # Check conditions
-        for auth in authorities:
-            if auth.applicability_conditions:
-                cond_text = ", ".join(auth.applicability_conditions)
-                lines.append(f"- **{auth.provision} Application**: Applies provided the following conditions are met: {cond_text}.")
-
-        lines.append("- *Assessment*: If your statements and records substantiate that the opposing party acted unilaterally or in breach of statutory procedures, you possess strong legal grounds to demand compliance, financial recovery, or restitution.")
-
-        return "\n".join(lines)
-
-    def _format_actions(
-        self,
-        state: UniversalCaseState,
-        domain: str,
-    ) -> tuple[str, list[str]]:
-        taken_actions_lower = [a.action.lower() for a in state.actions_already_taken]
-        action_plan: list[str] = []
-        lines: list[str] = []
-
-        lines.append("Here is your prioritized, sequential action plan:")
-
-        # Note actions already done
-        if taken_actions_lower:
-            done_text = ", ".join(state.actions_already_taken[0].action for _ in [1])
-            lines.append(f"*(Note: You have already completed: {', '.join(a.action for a in state.actions_already_taken)}. We will not repeat those steps.)*")
-
+    def _build_action_plan(self, state: UniversalCaseState, domain: str) -> list[str]:
+        """Build a prioritised action plan based on domain."""
+        taken_lower = [a.action.lower() for a in state.actions_already_taken]
+        plan: list[str] = []
         step = 1
+        d = domain.lower()
 
-        # Domain-aware next steps
-        d_lower = domain.lower()
-
-        if "employment" in d_lower or "salary" in d_lower:
-            if not any("notice" in a or "demand" in a for a in taken_actions_lower):
-                p = f"{step}. **Issue a Formal Legal Demand Notice**: Have an advocate draft and issue a statutory demand notice giving your employer 15 days to settle outstanding dues and notice pay."
-                lines.append(p)
-                action_plan.append(p)
+        if "employment" in d or "salary" in d:
+            if not any("notice" in a or "demand" in a for a in taken_lower):
+                plan.append(f"{step}. Issue a formal legal demand notice to your employer.")
                 step += 1
-
-            p2 = f"{step}. **Approach the Competent Authority / Labour Commissioner**: If the employer fails to comply, file a petition under the Payment of Wages Act / Section 39 of the relevant State Shops & Establishments Act before the jurisdictional Labour Officer."
-            lines.append(p2)
-            action_plan.append(p2)
+            plan.append(f"{step}. Approach the Labour Commissioner / competent authority.")
             step += 1
-
-        elif "cyber" in d_lower:
-            if not any("1930" in a or "cyber" in a for a in taken_actions_lower):
-                p = f"{step}. **Immediate Cyber Fraud Reporting**: Dial 1930 and register the transaction reference on cybercrime.gov.in immediately to initiate an account freeze on the beneficiary."
-                lines.append(p)
-                action_plan.append(p)
+        elif "cyber" in d:
+            if not any("1930" in a or "cyber" in a for a in taken_lower):
+                plan.append(f"{step}. Dial 1930 and register on cybercrime.gov.in immediately.")
                 step += 1
-
-            if not any("bank" in a for a in taken_actions_lower):
-                p2 = f"{step}. **Written Notice of Zero Customer Liability to Bank**: Submit a formal written dispute to your bank branch within 72 hours invoking RBI Master Circular (2017) on zero customer liability."
-                lines.append(p2)
-                action_plan.append(p2)
+            if not any("bank" in a for a in taken_lower):
+                plan.append(f"{step}. Submit written zero-liability dispute to your bank within 72 hours.")
                 step += 1
-
-        elif "property" in d_lower or "tenant" in d_lower:
-            p = f"{step}. **Police Complaint for Criminal Trespass / Intimidation**: If you are facing physical lockout or threats, file an immediate written complaint with the local police station."
-            lines.append(p)
-            action_plan.append(p)
+        elif "property" in d or "tenant" in d:
+            plan.append(f"{step}. File a police complaint if facing physical lockout or threats.")
             step += 1
-
-            p2 = f"{step}. **Move Urgent Injunction under Section 6 Specific Relief Act**: Approach the jurisdictional Civil Court / Rent Controller for an emergency mandatory injunction restraining the landlord from disturbing peaceful possession."
-            lines.append(p2)
-            action_plan.append(p2)
+            plan.append(f"{step}. Move urgent injunction before the Civil Court / Rent Controller.")
             step += 1
-
-        elif "consumer" in d_lower:
-            p = f"{step}. **Formal Legal Notice to Seller / Manufacturer**: Send a 15-day statutory legal notice demanding replacement, full refund, and compensation for deficiency in service."
-            lines.append(p)
-            action_plan.append(p)
+        elif "consumer" in d:
+            plan.append(f"{step}. Send a 15-day statutory legal notice to the seller.")
             step += 1
-
-            p2 = f"{step}. **File Consumer Complaint on e-Daakhil**: File an online complaint before the District Consumer Commission via e-Daakhil (edaakhil.nic.in) within 2 years of the cause of action."
-            lines.append(p2)
-            action_plan.append(p2)
+            plan.append(f"{step}. File consumer complaint on e-Daakhil (edaakhil.nic.in).")
             step += 1
-
         else:
-            p = f"{step}. **Serve a Formal Statutory Demand Notice**: Formally communicate the claim, statutory violations, and a 15-day cure period via registered post and electronic mail."
-            lines.append(p)
-            action_plan.append(p)
+            plan.append(f"{step}. Serve a formal statutory demand notice via registered post.")
+            step += 1
+            plan.append(f"{step}. Initiate legal proceedings if the demand is ignored.")
             step += 1
 
-            p2 = f"{step}. **Initiate Legal Proceedings**: If the demand is ignored, approach the jurisdictional judicial or quasi-judicial forum for appropriate relief."
-            lines.append(p2)
-            action_plan.append(p2)
-            step += 1
+        return plan
 
-        return "\n".join(lines), action_plan
+    # ── Fallback Template (when LLM is unavailable) ───────────────
 
-    def _format_evidence(self, state: UniversalCaseState) -> str:
-        lines: list[str] = [
-            "To build an airtight legal position, preserve the following evidence and do not alter or delete originals:"
-        ]
-
-        if state.evidence:
-            lines.append("- **Items You Have Identified**:")
-            for ev in state.evidence:
-                lines.append(f"  * {ev.type.title()}: {ev.description} [{ev.source}]")
-
-        lines.append("- **Crucial Additional Records to Compile**:")
-        lines.append("  * Written agreements, contracts, appointment letters, or signed receipts")
-        lines.append("  * Bank statements and digital transaction logs (UPI UTR / NEFT reference)")
-        lines.append("  * Electronic communications (full email threads with headers, WhatsApp chats preserved in PDF export)")
-        lines.append("  * Written notices, replies, medical memos (MLC), or postal acknowledgment cards")
-
-        return "\n".join(lines)
-
-    def _format_deadlines_and_risks(
+    def _fallback_template(
         self,
         state: UniversalCaseState,
         authorities: list[RetrievedAuthority],
-    ) -> tuple[str, list[str]]:
-        lines: list[str] = []
-        risks: list[str] = []
+        assessment: LegalAssessment,
+    ) -> str:
+        """
+        Produce a reasonable text answer without an LLM call.
+        Used when OpenAI is not configured or the call fails.
+        """
+        parts: list[str] = []
 
-        if state.risk.flags:
-            lines.append(f"⚠️ **Urgency Alert [{state.risk.level.upper()}]**:")
-            if state.risk.reason:
-                lines.append(f"- **Reason**: {state.risk.reason}")
-            if state.risk.recommended_emergency_action:
-                lines.append(f"- **Immediate Action**: {state.risk.recommended_emergency_action}")
-            risks.append(state.risk.reason or state.risk.level)
+        # Understanding
+        parts.append("### Understanding Your Situation")
+        if state.summary:
+            parts.append(state.summary)
 
-        lines.append("\n**Applicable Statutory Limitation Windows**:")
-        lines.append("- **Limitation Rules**: Indian statutes impose strict time windows. For money recovery/contracts: 3 years from cause of action. For consumer disputes: 2 years. For summary recovery of possession under Specific Relief Act: 6 months. For Cheque bounce (Section 138 NI Act): legal notice strictly within 30 days of dishonour memo.")
-        lines.append("- *Caution*: Never wait until the eve of limitation. Prompt legal notices preserve cause of action and evidentiary weight.")
+        # Legal position
+        statutory = [a for a in authorities if a.authority_type != "precedent"]
+        if statutory:
+            parts.append("\n### Your Legal Position")
+            for auth in statutory[:3]:  # Cap at 3 most relevant
+                parts.append(
+                    f"- **{auth.source} ({auth.provision})**: {auth.relevance}"
+                )
 
-        return "\n".join(lines), risks
+        # Actions
+        if assessment.action_plan:
+            parts.append("\n### What You Should Do Now")
+            for step in assessment.action_plan:
+                parts.append(step)
 
-    def _format_professional_advisory(self, state: UniversalCaseState) -> str:
-        return (
-            "While this guidance outlines your statutory framework, rights, and actionable sequence under Indian law, "
-            "formal court representations, statutory legal notices, and contested applications must be settled by a qualified "
-            "advocate enrolled with the State Bar Council. Engaging legal counsel is especially advisable before signing any settlement, "
-            "filing an FIR or writ petition, or approaching judicial tribunals."
+        # Evidence
+        parts.append("\n### Documents to Keep Safe")
+        parts.append("- Employment/appointment letters and contracts")
+        parts.append("- Bank statements showing salary history")
+        parts.append("- All communications (emails, WhatsApp, letters)")
+        parts.append("- Any notices received or sent")
+
+        # Caution
+        parts.append(
+            "\n### A Word of Caution\n"
+            "This guidance outlines your statutory rights under Indian law. "
+            "For formal legal notices, court filings, and contested proceedings, "
+            "please consult a qualified advocate enrolled with your State Bar Council."
         )
 
+        return "\n".join(parts)
 
+
+# Module-level instance — will be properly initialized in app.py
 grounded_answer_generator = GroundedLegalAnswerGenerator()

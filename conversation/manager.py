@@ -195,8 +195,8 @@ class ConversationManager:
         )
         all_authorities = statutory_authorities + precedent_authorities
 
-        # 8. Generate standardized 8-part grounded answer
-        direct_answer, legal_assessment = self._answer_generator.generate_answer(
+        # 8. Generate LLM-powered concise legal answer
+        direct_answer, legal_assessment = await self._answer_generator.generate_answer(
             case_state=case_state,
             authorities=all_authorities,
             base_qa_answer=qa_response.get("answer"),

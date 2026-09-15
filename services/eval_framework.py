@@ -23,6 +23,7 @@ Tracks quantitative metrics:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass, field
 from typing import Any
@@ -264,7 +265,7 @@ class EvaluationFramework:
         precedent_auths = self._research_layer.process_retrieved_cases(mock_precedents, state)
         all_auths = authorities + precedent_auths
 
-        ans_text, assessment = self._answer_generator.generate_answer(state, all_auths)
+        ans_text, assessment = asyncio.run(self._answer_generator.generate_answer(state, all_auths))
 
         # Precedents must be flagged as persuasive context, not user facts
         precedents_distinguished = (
