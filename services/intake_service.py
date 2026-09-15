@@ -78,9 +78,20 @@ You are capable of handling ANY legal question or scenario across the ENTIRE spe
   - Never repeat a question that was already asked or answered.
   - If the user pivots, goes off on a tangent, or shares an emotional reaction, engage with what they actually said as a human lawyer would.
 
-### 4. SUFFICIENT CONTEXT & PROMPT RESOLUTION:
-- Do NOT trap users in endless intake loops.
-- Once you understand the core issue (who, what happened, and what they want to achieve), summarize the situation concisely and outline the legal remedies, or transition to complete legal analysis (`is_ready_for_qa = true`).
+### 4. CONVERSATION MODES & RESOLUTION:
+- **ACTIONABLE MODE (Conversational Legal Intake & Remedies)**:
+  - In this mode, the user chose to have a CONVERSATION.
+  - Your primary goal is interactive conversational discovery: understanding the scenario, explaining rights/statutes, clarifying missing critical facts, and helping them formulate an action plan.
+  - In initial turns (Turns 1-3), `is_ready_for_qa` MUST BE `false` as long as key facts, timeline, or evidence remain to be clarified.
+  - In `followup_question`, ALWAYS provide immediate substantive legal context first (reassurance, rights under Indian law), and then ask ONE natural, relevant next question.
+  - Only set `is_ready_for_qa = true` when:
+    (a) You have conducted a multi-turn conversation and clarified the core facts, OR
+    (b) You provide a concise factual summary and the user confirms it, OR
+    (c) The user explicitly states they have provided all info and asks for final advice/action plan.
+- **INFORMATIVE MODE**:
+  - Explain legal concepts or sections. Set `is_ready_for_qa = true` if the question is reasonably clear.
+- **READABLE MODE**:
+  - Simplified plain-language legal explanation. Always set `is_ready_for_qa = true`.
 """
 
 
@@ -166,6 +177,15 @@ class OpenAIIntakeService:
             role = "user" if msg.role == MessageRole.USER else "assistant"
             conversation_history.append({"role": role, "content": msg.content})
 
+        mode_instruction = (
+            "5. ACTIVE MODE IS ACTIONABLE (CONVERSATIONAL INTAKE): The user is having an interactive conversation. "
+            "You MUST converse with them! Do NOT set is_ready_for_qa = true on initial turns when facts/evidence are missing. "
+            "Set is_ready_for_qa = false, and in 'followup_question' provide immediate substantive legal context first (reassurance/rights) "
+            "and then ask ONE natural follow-up question to continue the dialogue."
+            if state.mode == Mode.ACTIONABLE
+            else f"5. ACTIVE MODE IS {state.mode.value.upper()}."
+        )
+
         user_prompt_content = {
             "mode": state.mode.value,
             "existing_facts": {
@@ -181,7 +201,8 @@ class OpenAIIntakeService:
                 "2. YOU ARE THE LEGAL PLATFORM. NEVER tell the user to 'seek legal advice', 'consult an attorney', or 'hire a lawyer'. "
                 "3. NEVER ask naive, patronizing questions like 'Have you considered asking your employer/other party for clarification?'. "
                 "4. If the user indicates they don't have a document, don't know a detail, or replied with an off-topic/negative response, "
-                "DO NOT repeat or rephrase the previous question. Reassure the user, record it as unavailable, and ask about an entirely different topic or move to summarize."
+                "DO NOT repeat or rephrase the previous question. Reassure the user, record it as unavailable, and ask about an entirely different topic or move to summarize. "
+                f"{mode_instruction}"
             ),
         }
 
@@ -393,6 +414,23 @@ Respond ONLY with a valid JSON object matching this structure:
         if state.mode == Mode.READABLE:
             is_ready = True
             followup = None
+        elif state.mode == Mode.ACTIONABLE:
+            # Actionable mode is a conversational intake flow.
+            # If the model produced a follow-up question, or if we are in early turns with missing info,
+            # we MUST preserve the conversation and NOT jump directly to the final QA answer.
+            user_msg_count = sum(
+                1 for m in state.messages if m.role == MessageRole.USER
+            )
+            has_missing = bool(case_state.get("missing_information"))
+
+            if followup:
+                is_ready = False
+            elif user_msg_count < 3 and has_missing:
+                is_ready = False
+                followup = (
+                    "Could you share a few more details regarding what happened "
+                    "so I can provide the most accurate legal guidance?"
+                )
 
         if is_ready:
             followup = None
