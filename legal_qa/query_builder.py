@@ -51,7 +51,7 @@ class QueryBuilder:
         parts: list[str] = []
 
         # Opening with original problem
-        parts.append(f"The user's original concern: {original_problem}")
+        parts.append(f"Client's legal concern: {original_problem}")
 
         # Add collected facts
         if non_meta_facts:
@@ -60,7 +60,7 @@ class QueryBuilder:
                 readable_key = key.replace("_", " ").title()
                 fact_lines.append(f"  - {readable_key}: {value}")
             parts.append(
-                "Relevant details collected:\n" + "\n".join(fact_lines)
+                "Relevant details established:\n" + "\n".join(fact_lines)
             )
 
         # Add any additional context from later messages
@@ -73,15 +73,15 @@ class QueryBuilder:
 
         if additional_context:
             parts.append(
-                "Additional context from user: "
+                "Additional factual context from client: "
                 + " ".join(additional_context)
             )
 
         # Closing: ask for the appropriate legal guidance
         domain = state.facts.get("detected_domain", "general")
         parts.append(
-            "Based on the above, what legal remedies, procedures, "
-            "and relevant laws apply?"
+            "Based on the above, what direct actionable legal remedies, procedures, "
+            "and relevant Indian statutory provisions apply to the client?"
         )
 
         return "\n\n".join(parts)

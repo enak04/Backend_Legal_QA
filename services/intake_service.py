@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -97,6 +98,37 @@ You are capable of handling ANY legal question or scenario across the ENTIRE spe
   - Explain legal concepts or sections. Set `is_ready_for_qa = true` if the question is reasonably clear.
 - **READABLE MODE**:
   - Simplified plain-language legal explanation. Always set `is_ready_for_qa = true`.
+
+### 5. LAWYER-GRADE TONE & DIRECT SECOND-PERSON ADDRESS (CRITICAL):
+- **Address the Client Directly**:
+  - ALWAYS use direct second-person address ("You", "Your employer", "Your rights", "Your contract").
+  - NEVER speak in the third person (NEVER say "the user", "the client", or "the employee").
+- **Structure of Every Response in `followup_question`**:
+  - Speak with the empathy, gravitas, and strategic clarity of an expert legal advocate.
+  - In each turn:
+    1. **Empathetic Acknowledgment & Reassurance**: Validate their situation warmly.
+    2. **Substantive Legal Framework & Rights**: Explicitly explain the relevant Indian statutes, protections, or legal positions (e.g. Karnataka Shops & Establishments Act, Payment of Wages Act, NI Act Section 138, BNSS/CrPC, Consumer Protection Act 2019). Explain *why* certain details matter.
+    3. **One Focused Question**: Ask ONE clear, natural question to clarify crucial missing facts, evidence (contracts, payslips, bank statements, notices), or their desired remedy.
+
+### 6. HUMAN-CENTRIC & IMPERFECT INPUT UNDERSTANDING (CRITICAL):
+- **Understand that it is a Human Talking and Messages May Not Be Perfect**:
+  - The person consulting you is a human experiencing real-world stress or legal trouble, not a lawyer or a machine.
+  - Their messages may contain typos, colloquialisms, emotional venting, or incomplete fragments (e.g., "Karnataka and 3 months", "he just said fired nothing else", "no clauses written", "they scammed me", "blocked my number", "paid rent by upi want him out of my life").
+  - **NEVER penalize, critique, or get stuck on short, informal, emotional, or imperfect replies.**
+  - **A Real Lawyer Connects the Dots**:
+    - If a client says *"He just said you are fired nothing else"*: Recognize immediately that no written termination notice, no show-cause letter, and no verbal discussions took place. That makes the termination arbitrary and without due process under Indian labor laws!
+    - If a client says *"No clauses written"*: Recognize that the contract is silent on notice periods and termination procedures, meaning statutory rules and default protections govern their rights.
+    - If a client says *"Karnataka and 3 months"*: Immediately extract that the matter is under Karnataka jurisdiction and arrears amount to 3 months.
+    - If a client says *"Paid rent on time via UPI every month"*: Immediately extract that they have clear digital proof of tenancy and absence of default.
+    - If a client says *"Blocked my number"*: Recognize deliberate evasion or bad-faith refusal to communicate.
+  - **Humans Do Not Speak Like Checklists**:
+    - Clients frequently answer only one part of a question, or pivot to what is burning in their mind (e.g. sharing proof of payment or expressing their urgent fear).
+    - **DO NOT repeat the question just because the client didn't answer it directly.**
+    - Acknowledge what they *did* share, extract whatever legal fact is implied, and move the case forward.
+  - **Never Demand Legal Jargon**: If they describe being cheated or having a bounced cheque, classify the offense under the relevant law (Section 138 of NI Act, BNS / IPC for cheating) without asking them to name the legal statute.
+  - **Client Stating Their Goal or Asking for Relief = Ready for Solutions**:
+    - When a client says *"I want to stop him from evicting me"*, *"I want to recover my salary"*, *"What legal action can I take?"*, or *"Outline the steps I should take"*, they are explicitly asking for legal remedies.
+    - Transition immediately: set `is_ready_for_qa = true` to deliver full, actionable legal remedies.
 """
 
 
@@ -190,15 +222,14 @@ class OpenAIIntakeService:
         if state.mode == Mode.ACTIONABLE:
             mode_instruction = (
                 f"5. ACTIVE MODE IS ACTIONABLE (CONVERSATIONAL INTAKE, User Turn #{user_turn_count}):\n"
+                "- REMEMBER: THE CLIENT IS A HUMAN TALKING, NOT A MACHINE OR LAWYER. Their messages may not be perfect—they may use fragments, typos, or emotional expressions (e.g., 'paid rent by UPI every month, want him to stop', 'he just said fired nothing else', 'karnataka and 3 months').\n"
+                "  - Connect the dots from what they said: infer legal implications without asking them to clarify minor details or restate themselves.\n"
+                "  - If the client did not answer a specific previous question and instead spoke about something else (e.g. payment history or desired remedy), NEVER repeat the previous question. Pivot to their stated point.\n"
                 "- ABSOLUTELY FORBIDDEN: You must NEVER repeat, rephrase, or ask about any topic already covered in 'previous_assistant_questions': "
                 f"{json.dumps(previous_assistant_questions)}.\n"
-                "- NEGATIVE/SHORT ANSWERS ARE FINAL FACTS: If the user said 'He just said you are fired nothing else', 'No clauses', 'None', or 'I don't know', "
-                "that means NO verbal discussions or clauses exist. Accept this as a confirmed fact, clear it from missing_information, and NEVER ask about it again!\n"
-                "- ACKNOWLEDGE SERIOUS WRONGS & DISCRIMINATION: If the user reported racial discrimination, unpaid wages, or termination without notice/cause, "
-                "validate its legal gravity under Indian law (e.g., Section 39 of the Karnataka Shops and Commercial Establishments Act, 1961; Payment of Wages Act).\n"
-                "- TURN CAP & RESOLUTION: If User Turn >= 3 and core facts (state/jurisdiction, nature of issue, unpaid wages/amounts, and termination circumstance) are established, "
-                "STOP asking questions! Set is_ready_for_qa = true and synthesize the full legal query for complete remedies. "
-                "Only if User Turn < 3 and critical facts are genuinely missing, ask ONE single new question on an unasked topic."
+                "- CLIENT GOAL / DESIRED REMEDY = READY FOR RESOLUTION: If the client stated their goal (e.g. 'I want to stop him', 'I want my deposit protected', 'recover my salary', 'tell me what to do'), or if User Turn >= 3 and core facts are established, "
+                "STOP asking questions! Set is_ready_for_qa = true and synthesize the full legal query for complete actionable remedies.\n"
+                "- Only if User Turn < 3, no goal was just stated, and critical facts are genuinely missing, ask ONE single new question on an unasked topic."
             )
         else:
             mode_instruction = f"5. ACTIVE MODE IS {state.mode.value.upper()}."
@@ -362,7 +393,7 @@ Respond ONLY with a valid JSON object matching this structure:
     "string"
   ],
   "is_ready_for_qa": boolean,
-  "followup_question": "string or null (the single best question, answering interruptions if any, or summary for confirmation)",
+  "followup_question": "string or null (A complete, professional lawyer consultation response addressed directly to the client ('You'). First provide empathetic validation and substantive legal context citing relevant Indian statutory provisions and rights, then ask ONE natural, focused follow-up question to clarify documentation, evidence, or relief sought)",
   "synthesized_query": "string or null"
 }
 """
@@ -450,11 +481,61 @@ Respond ONLY with a valid JSON object matching this structure:
             is_duplicate = False
             if followup:
                 norm_followup = followup.strip().lower()
+
+                # Extract the main question clause (the part around or before '?')
+                q_clause = norm_followup
+                if "?" in norm_followup:
+                    q_clause = norm_followup.split("?")[-2].split(".")[-1].strip()
+
+                # Extract significant content words from the question clause
+                stop_words = {
+                    "what", "when", "where", "which", "who", "whom", "whose", "why", "how",
+                    "have", "has", "had", "having", "does", "done", "doing", "would", "should", "could",
+                    "your", "yours", "yourself", "yourselves", "you", "about", "above", "across",
+                    "after", "again", "against", "along", "already", "also", "although", "among",
+                    "around", "because", "before", "behind", "below", "beside", "between",
+                    "both", "during", "each", "either", "else", "enough", "even", "ever", "every",
+                    "from", "further", "here", "into", "just", "like", "more", "most", "much",
+                    "must", "near", "never", "only", "other", "our", "ours", "please", "regarding",
+                    "same", "some", "such", "than", "that", "their", "theirs", "them", "then",
+                    "there", "these", "they", "this", "those", "through", "under", "until",
+                    "very", "well", "were", "what", "with", "within", "without", "can", "may",
+                    "confirm", "considered", "strengthen", "case", "position"
+                }
+                q_words = {
+                    re.sub(r"[^\w]", "", w)
+                    for w in q_clause.split()
+                    if len(w) > 3 and re.sub(r"[^\w]", "", w) not in stop_words
+                }
+
                 for prev in previous_questions_lower:
+                    # 1. Full text overlap
                     if norm_followup in prev or prev in norm_followup:
                         is_duplicate = True
                         break
-                    # Key phrase overlap checks
+
+                    # 2. Main question clause overlap
+                    if len(q_clause) > 15 and q_clause in prev:
+                        is_duplicate = True
+                        break
+
+                    if "?" in prev:
+                        prev_q_clause = prev.split("?")[-2].split(".")[-1].strip()
+                        if len(prev_q_clause) > 15 and (prev_q_clause in norm_followup or q_clause in prev_q_clause):
+                            is_duplicate = True
+                            break
+
+                        prev_words = {
+                            re.sub(r"[^\w]", "", w)
+                            for w in prev_q_clause.split()
+                            if len(w) > 3 and re.sub(r"[^\w]", "", w) not in stop_words
+                        }
+                        shared_words = q_words & prev_words
+                        if len(shared_words) >= 3 or (q_words and len(shared_words) / len(q_words) >= 0.5):
+                            is_duplicate = True
+                            break
+
+                    # 3. Key phrase overlap checks
                     for kw in [
                         "verbal agreement",
                         "verbal discussions",
@@ -462,6 +543,10 @@ Respond ONLY with a valid JSON object matching this structure:
                         "appointment letter",
                         "which state",
                         "unpaid salary",
+                        "messages or emails",
+                        "documented any",
+                        "documenting any",
+                        "threats",
                     ]:
                         if kw in norm_followup and kw in prev:
                             is_duplicate = True
@@ -474,8 +559,8 @@ Respond ONLY with a valid JSON object matching this structure:
                     "Detected duplicate follow-up question: '%s'. Overriding duplicate.",
                     followup,
                 )
-                if user_msg_count >= 3:
-                    # User has answered across 3+ turns; finish intake and provide remedies!
+                if user_msg_count >= 2:
+                    # User has answered across 2+ turns; finish intake and provide remedies!
                     is_ready = True
                     followup = None
                 else:

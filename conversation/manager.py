@@ -19,6 +19,7 @@ API routes remain thin.
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 
 from conversation.followup import FollowUpEngine
@@ -166,10 +167,13 @@ class ConversationManager:
             mode=state.mode.value,
         )
 
-        # 7. Store the result and mark answered
+        # 7. Store the result, format direct second-person address, and mark answered
         result = LegalQAResult(**qa_response)
+        direct_answer = self._format_direct_answer(result.answer)
+        result.answer = direct_answer
         store_legal_qa_result(state, result)
-        add_assistant_message(state, result.answer)
+        add_assistant_message(state, direct_answer)
+        state.last_assistant_question = None
         state.stage = ConversationStage.ANSWERED
         await self._repo.update(state)
 
@@ -177,7 +181,7 @@ class ConversationManager:
             "type": "final_answer",
             "conversation_id": state.conversation_id,
             "mode": state.mode.value,
-            "answer": result.answer,
+            "answer": direct_answer,
             "case_state": state.facts.get("case_state"),
             "reasoning_chain": result.reasoning_chain,
             "sources": [
@@ -186,6 +190,43 @@ class ConversationManager:
             ],
             "timestamp": state.messages[-1].timestamp,
         }
+
+    @staticmethod
+    def _format_direct_answer(raw_answer: str) -> str:
+        """
+        Transform third-person references ('the user', 'the user can') into
+        direct, respectful second-person legal advice ('you', 'you can').
+        """
+        if not raw_answer:
+            return raw_answer
+
+        replacements = [
+            (r"\bThe user can\b", "You can"),
+            (r"\bthe user can\b", "you can"),
+            (r"\bThe user should\b", "You should"),
+            (r"\bthe user should\b", "you should"),
+            (r"\bThe user is\b", "You are"),
+            (r"\bthe user is\b", "you are"),
+            (r"\bThe user was\b", "You were"),
+            (r"\bthe user was\b", "you were"),
+            (r"\bThe user has\b", "You have"),
+            (r"\bthe user has\b", "you have"),
+            (r"\bThe user must\b", "You must"),
+            (r"\bthe user must\b", "you must"),
+            (r"\bThe user cannot\b", "You cannot"),
+            (r"\bthe user cannot\b", "you cannot"),
+            (r"\bThe user may\b", "You may"),
+            (r"\bthe user may\b", "you may"),
+            (r"\bThe user's\b", "Your"),
+            (r"\bthe user's\b", "your"),
+            (r"\bthe user\b", "you"),
+            (r"\bThe user\b", "You"),
+        ]
+
+        text = raw_answer
+        for pattern, replacement in replacements:
+            text = re.sub(pattern, replacement, text)
+        return text
 
 
 # ── Exceptions ────────────────────────────────────────────────
