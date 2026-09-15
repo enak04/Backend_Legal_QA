@@ -412,6 +412,7 @@ class FollowUpEngine:
     def evaluate_missing_facts(
         self,
         case_state: UniversalCaseState,
+        user_messages_text: str = "",
     ) -> list[MissingFact]:
         """
         Identify and rank missing facts by legal information value.
@@ -424,8 +425,8 @@ class FollowUpEngine:
         if domain_def:
             for q_def in domain_def.high_value_questions:
                 key = q_def["fact_key"]
-                # Check if already answered in state
-                if self._is_fact_known(case_state, key):
+                # Check if already answered in state or user messages
+                if self._is_fact_known(case_state, key, user_messages_text=user_messages_text):
                     continue
 
                 missing.append(
@@ -439,7 +440,7 @@ class FollowUpEngine:
                 )
 
         # 2. Universal core requirements: Jurisdiction
-        if not case_state.jurisdiction.state and not any(m.fact_key == "jurisdiction_state" for m in missing):
+        if not case_state.jurisdiction.state and not self._is_fact_known(case_state, "jurisdiction_state", user_messages_text=user_messages_text) and not any(m.fact_key == "jurisdiction_state" for m in missing):
             missing.append(
                 MissingFact(
                     fact_key="jurisdiction_state",
@@ -456,12 +457,29 @@ class FollowUpEngine:
 
         return missing
 
-    def _is_fact_known(self, state: UniversalCaseState, key: str) -> bool:
+    def _is_fact_known(
+        self,
+        state: UniversalCaseState,
+        key: str,
+        user_messages_text: str = "",
+    ) -> bool:
         """Check if a factual dimension is already established."""
-        all_fact_text = " ".join(
-            f.get("fact", "") if isinstance(f, dict) else str(f)
-            for f in state.known_facts
-        ).lower()
+        all_fact_parts = []
+        for f in state.known_facts:
+            if isinstance(f, dict):
+                all_fact_parts.extend(str(v) for v in f.values())
+            else:
+                all_fact_parts.append(str(f))
+
+        # Include domain_extensions values
+        if isinstance(state.domain_extensions, dict):
+            for ext_val in state.domain_extensions.values():
+                if isinstance(ext_val, dict):
+                    all_fact_parts.extend(str(v) for v in ext_val.values())
+                else:
+                    all_fact_parts.append(str(ext_val))
+
+        all_fact_text = " ".join(all_fact_parts).lower()
 
         # Check party entity types as well
         party_parts = []
@@ -477,12 +495,19 @@ class FollowUpEngine:
             for k, v in state.parties.items():
                 party_parts.append(f"{k} {v}")
         party_text = " ".join(party_parts).lower()
-        combined_text = f"{all_fact_text} {party_text} {state.summary or ''}".lower()
+        combined_text = f"{all_fact_text} {party_text} {state.summary or ''} {user_messages_text}".lower()
 
         if "jurisdiction" in key or "state" in key:
-            return bool(state.jurisdiction.state or state.jurisdiction.city)
+            return bool(state.jurisdiction.state or state.jurisdiction.city) or bool(
+                re.search(
+                    r"\b(karnataka|bangalore|bengaluru|delhi|mumbai|maharashtra|tamil nadu|chennai|hyderabad|telangana|west bengal|kolkata|kerala|uttar pradesh|haryana|gurgaon|noida|pune)\b",
+                    combined_text,
+                )
+            )
 
         if "employment_type" in key:
+            if isinstance(state.domain_extensions, dict) and state.domain_extensions.get("employment", {}).get("employment_type"):
+                return True
             return any(
                 w in combined_text
                 for w in [
@@ -518,7 +543,9 @@ class FollowUpEngine:
             ) or any(w in combined_text for w in ["fir", "police complaint", "cybercrime", "1930", "disputed with bank"])
 
         if "amount" in key or "paid" in key or "loss" in key or "value" in key:
-            return bool(state.financial.amount or state.financial.amount_raw)
+            return bool(state.financial.amount or state.financial.amount_raw) or bool(
+                re.search(r"(?:rs\.?|₹|\blakh|\bcrore)\s*[\d,]+", combined_text)
+            )
 
         if "date" in key or "timing" in key or "hour" in key or "duration" in key:
             return bool(state.dates.incident_date or state.dates.notice_date)

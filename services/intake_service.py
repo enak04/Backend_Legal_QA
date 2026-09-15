@@ -234,6 +234,7 @@ class OpenAIIntakeService:
 
         conversation_history = []
         previous_assistant_questions = []
+        user_texts = []
         user_turn_count = 0
         for msg in state.messages:
             if isinstance(msg, dict):
@@ -252,6 +253,15 @@ class OpenAIIntakeService:
                 previous_assistant_questions.append(content)
             else:
                 user_turn_count += 1
+                user_texts.append(content)
+
+        if latest_user_message and (not user_texts or latest_user_message != user_texts[-1]):
+            user_texts.append(latest_user_message)
+            user_turn_count += 1
+        all_user_text = " ".join(user_texts)
+
+        from conversation.followup import extract_facts
+        deterministic_facts = extract_facts(all_user_text)
 
         # Inspect unresolved high-priority facts to guide intake
         if isinstance(existing_case_state, dict):
@@ -262,7 +272,16 @@ class OpenAIIntakeService:
         else:
             curr_ucs = existing_case_state or UniversalCaseState()
 
-        missing_facts = self._fallback_engine.evaluate_missing_facts(curr_ucs)
+        # Update curr_ucs with deterministic facts
+        if deterministic_facts.get("state") and not curr_ucs.jurisdiction.state:
+            curr_ucs.jurisdiction.state = deterministic_facts["state"]
+        if deterministic_facts.get("city") and not curr_ucs.jurisdiction.city:
+            curr_ucs.jurisdiction.city = deterministic_facts["city"]
+        if deterministic_facts.get("employment_type"):
+            curr_ucs.domain_extensions.setdefault("employment", {})["employment_type"] = deterministic_facts["employment_type"]
+            curr_ucs.known_facts.append({"fact": f"employment_type: {deterministic_facts['employment_type']}", "source": "user_statement"})
+
+        missing_facts = self._fallback_engine.evaluate_missing_facts(curr_ucs, user_messages_text=all_user_text)
         high_missing = [
             {"fact_key": m.fact_key, "question": m.sample_question, "reason": m.reason}
             for m in missing_facts if m.legal_importance == "HIGH"
@@ -274,7 +293,7 @@ class OpenAIIntakeService:
             "existing_facts": {
                 k: v for k, v in state.facts.items() if k != "case_state"
             },
-            "current_case_state": existing_case_state,
+            "current_case_state": curr_ucs.model_dump(),
             "unresolved_high_priority_legal_questions": high_missing,
             "previous_assistant_questions": previous_assistant_questions,
             "conversation_history": conversation_history,
@@ -429,6 +448,46 @@ Respond ONLY with a valid JSON object matching this structure:
         )
         return "\n".join(prompt_parts)
 
+    @staticmethod
+    def _is_question_duplicate(q_text: str, prev_questions: list[str]) -> bool:
+        if not q_text or not prev_questions:
+            return False
+        norm_q = q_text.strip().lower()
+        if "*(why this matters:" in norm_q:
+            norm_q = norm_q.split("*(why this matters:")[0].strip()
+        if "?" in norm_q:
+            norm_q = norm_q.split("?")[-2].split(".")[-1].strip()
+
+        stop_words = {
+            "what", "when", "where", "which", "who", "whom", "whose", "why", "how",
+            "have", "has", "had", "does", "would", "should", "could", "your", "you",
+            "about", "please", "case", "state", "share", "tell", "this", "that", "there",
+            "determine", "applicable", "framework", "regime", "claim", "under", "statutory"
+        }
+        q_words = {
+            re.sub(r"[^\w]", "", w)
+            for w in norm_q.split()
+            if len(w) > 3 and re.sub(r"[^\w]", "", w) not in stop_words
+        }
+
+        for prev in prev_questions:
+            norm_prev = prev.strip().lower()
+            if "*(why this matters:" in norm_prev:
+                norm_prev = norm_prev.split("*(why this matters:")[0].strip()
+            if norm_q in norm_prev or norm_prev in norm_q:
+                return True
+            if "?" in norm_prev:
+                norm_prev = norm_prev.split("?")[-2].split(".")[-1].strip()
+            prev_words = {
+                re.sub(r"[^\w]", "", w)
+                for w in norm_prev.split()
+                if len(w) > 3 and re.sub(r"[^\w]", "", w) not in stop_words
+            }
+            shared = q_words & prev_words
+            if len(shared) >= 2 or (q_words and len(shared) / len(q_words) >= 0.4):
+                return True
+        return False
+
     def _parse_openai_response(
         self,
         parsed: dict[str, Any],
@@ -437,6 +496,28 @@ Respond ONLY with a valid JSON object matching this structure:
         """Parse structured output into UniversalCaseState."""
         raw_facts = parsed.get("extracted_facts") or {}
         extracted_facts = {k: v for k, v in raw_facts.items() if v is not None and v != ""}
+
+        # Collect all user texts across turns
+        user_msg_count = 0
+        user_messages = []
+        previous_questions_lower = []
+        for m in state.messages:
+            m_role = getattr(m, "role", None)
+            if isinstance(m, dict):
+                m_role = m.get("role")
+            m_content = str(getattr(m, "content", "")) if hasattr(m, "content") else (str(m.get("content", "")) if isinstance(m, dict) else str(m))
+            if m_role in (MessageRole.USER, "user"):
+                user_msg_count += 1
+                user_messages.append(m_content)
+            elif m_role in (MessageRole.ASSISTANT, "assistant"):
+                previous_questions_lower.append(m_content.strip().lower())
+
+        all_user_text = " ".join(user_messages)
+        from conversation.followup import extract_facts
+        deterministic_facts = extract_facts(all_user_text)
+        for k, v in deterministic_facts.items():
+            if k not in extracted_facts or not extracted_facts[k]:
+                extracted_facts[k] = v
 
         # Build UniversalCaseState
         case_info = parsed.get("case") or {}
@@ -449,7 +530,11 @@ Respond ONLY with a valid JSON object matching this structure:
         extracted_facts["detected_domain"] = domain
 
         jur_data = parsed.get("jurisdiction") or {}
-        if jur_data.get("state") and "state" not in extracted_facts:
+        if extracted_facts.get("state") and not jur_data.get("state"):
+            jur_data["state"] = extracted_facts["state"]
+        if extracted_facts.get("city") and not jur_data.get("city"):
+            jur_data["city"] = extracted_facts["city"]
+        elif jur_data.get("state") and "state" not in extracted_facts:
             extracted_facts["state"] = jur_data["state"]
 
         raw_issues = case_info.get("issues", [])
@@ -540,6 +625,14 @@ Respond ONLY with a valid JSON object matching this structure:
             missing_information=parsed.get("missing_information", []),
         )
 
+        # Merge known deterministic facts into universal_state
+        if extracted_facts.get("employment_type"):
+            universal_state.domain_extensions.setdefault("employment", {})["employment_type"] = extracted_facts["employment_type"]
+            universal_state.known_facts.append({"fact": f"employment_type: {extracted_facts['employment_type']}", "source": "user_statement"})
+        if extracted_facts.get("written_contract"):
+            universal_state.domain_extensions.setdefault("employment", {})["written_contract"] = extracted_facts["written_contract"]
+            universal_state.known_facts.append({"fact": f"written_contract: {extracted_facts['written_contract']}", "source": "user_statement"})
+
         is_ready = bool(parsed.get("is_ready_for_qa", False))
         followup = parsed.get("followup_question")
         synthesized_query = parsed.get("synthesized_query")
@@ -548,21 +641,7 @@ Respond ONLY with a valid JSON object matching this structure:
         if state.mode in (Mode.READABLE, Mode.INFORMATIVE):
             is_ready = True
         elif state.mode == Mode.ACTIONABLE:
-            user_msg_count = 0
-            user_messages = []
-            previous_questions_lower = []
-            for m in state.messages:
-                m_role = getattr(m, "role", None)
-                if isinstance(m, dict):
-                    m_role = m.get("role")
-                m_content = str(getattr(m, "content", "")) if hasattr(m, "content") else (str(m.get("content", "")) if isinstance(m, dict) else str(m))
-                if m_role in (MessageRole.USER, "user"):
-                    user_msg_count += 1
-                    user_messages.append(m_content.lower())
-                elif m_role in (MessageRole.ASSISTANT, "assistant"):
-                    previous_questions_lower.append(m_content.strip().lower())
-
-            latest_msg = user_messages[-1] if user_messages else ""
+            latest_msg = user_messages[-1].lower() if user_messages else ""
 
             user_demanded_advice = any(
                 phrase in latest_msg
@@ -573,60 +652,48 @@ Respond ONLY with a valid JSON object matching this structure:
                 ]
             )
 
-            # Re-evaluate missing facts with the updated universal_state
-            missing_after = self._fallback_engine.evaluate_missing_facts(universal_state)
+            # Re-evaluate missing facts with updated universal_state and user messages
+            missing_after = self._fallback_engine.evaluate_missing_facts(universal_state, user_messages_text=all_user_text)
             high_priority_missing = [m for m in missing_after if m.legal_importance == "HIGH"]
 
             is_duplicate = False
             if followup:
-                norm_followup = followup.strip().lower()
-                q_clause = norm_followup
-                if "?" in norm_followup:
-                    q_clause = norm_followup.split("?")[-2].split(".")[-1].strip()
-
-                stop_words = {
-                    "what", "when", "where", "which", "who", "whom", "whose", "why", "how",
-                    "have", "has", "had", "does", "would", "should", "could", "your", "you",
-                    "about", "please", "case", "state", "share", "tell"
-                }
-                q_words = {
-                    re.sub(r"[^\w]", "", w)
-                    for w in q_clause.split()
-                    if len(w) > 3 and re.sub(r"[^\w]", "", w) not in stop_words
-                }
-
-                for prev in previous_questions_lower:
-                    if norm_followup in prev or prev in norm_followup:
-                        is_duplicate = True
-                        break
-                    if "?" in prev:
-                        prev_q_clause = prev.split("?")[-2].split(".")[-1].strip()
-                        prev_words = {
-                            re.sub(r"[^\w]", "", w)
-                            for w in prev_q_clause.split()
-                            if len(w) > 3 and re.sub(r"[^\w]", "", w) not in stop_words
-                        }
-                        shared = q_words & prev_words
-                        if len(shared) >= 3 or (q_words and len(shared) / len(q_words) >= 0.5):
-                            is_duplicate = True
-                            break
+                is_duplicate = self._is_question_duplicate(followup, previous_questions_lower)
 
             # PROGRAMMATIC READINESS GATE:
-            if not is_ready:
+            # 1. Hard Turn Cap or user demand -> MUST be ready!
+            if user_demanded_advice or user_msg_count >= 3:
+                is_ready = True
+                followup = None
+            elif not is_ready:
                 # LLM determined more info is needed
                 if not followup or is_duplicate:
-                    if high_priority_missing:
-                        top_missing = high_priority_missing[0]
+                    unasked = [
+                        m for m in high_priority_missing
+                        if not self._is_question_duplicate(m.sample_question, previous_questions_lower)
+                    ]
+                    if unasked:
+                        top_missing = unasked[0]
                         reason_text = f"\n*(Why this matters: {top_missing.reason})*" if top_missing.reason else ""
                         followup = f"{top_missing.sample_question}{reason_text}"
+                    else:
+                        is_ready = True
+                        followup = None
             else:
                 # LLM claimed it is ready:
-                # Only block if it is Turn 1 without a synthesized query and high-priority facts are still missing
                 if not synthesized_query and not user_demanded_advice and user_msg_count < 2 and high_priority_missing:
-                    is_ready = False
-                    top_missing = high_priority_missing[0]
-                    reason_text = f"\n*(Why this matters: {top_missing.reason})*" if top_missing.reason else ""
-                    followup = f"{top_missing.sample_question}{reason_text}"
+                    unasked = [
+                        m for m in high_priority_missing
+                        if not self._is_question_duplicate(m.sample_question, previous_questions_lower)
+                    ]
+                    if unasked:
+                        is_ready = False
+                        top_missing = unasked[0]
+                        reason_text = f"\n*(Why this matters: {top_missing.reason})*" if top_missing.reason else ""
+                        followup = f"{top_missing.sample_question}{reason_text}"
+                    else:
+                        is_ready = True
+                        followup = None
                 else:
                     is_ready = True
                     followup = None
@@ -634,10 +701,23 @@ Respond ONLY with a valid JSON object matching this structure:
         if is_ready:
             followup = None
             if not synthesized_query:
-                temp_state = state.model_copy(deep=True)
-                temp_state.facts.update(extracted_facts)
-                temp_state.facts["case_state"] = universal_state.model_dump()
-                synthesized_query = self._query_builder.build(temp_state)
+                jurisdiction_str = universal_state.jurisdiction.state or extracted_facts.get("state") or "India"
+                city_str = universal_state.jurisdiction.city or extracted_facts.get("city") or ""
+                loc_full = f"{city_str}, {jurisdiction_str}".strip(", ")
+                emp_type = extracted_facts.get("employment_type") or universal_state.domain_extensions.get("employment", {}).get("employment_type") or ""
+                core_issue = universal_state.case_type or extracted_facts.get("core_issue") or "wrongful termination"
+                initial_statement = user_messages[0] if user_messages else ""
+                synthesized_query = (
+                    f"Client's legal concern: {initial_statement}\n\n"
+                    f"Relevant details established:\n"
+                    f"  - Jurisdiction: {loc_full}\n"
+                    f"  - Core Issue: {core_issue}\n"
+                    f"  - Sector/Type: {emp_type or 'unspecified'}\n\n"
+                    f"Spotted legal issues:\n"
+                    f"  - {core_issue}\n\n"
+                    f"Address the recipient directly as 'you' in second person. Based on the above, what direct actionable "
+                    f"legal remedies, procedures, and relevant Indian statutory provisions apply?"
+                )
 
         return IntakeAnalysisResult(
             extracted_facts=extracted_facts,
