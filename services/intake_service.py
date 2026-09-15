@@ -280,6 +280,15 @@ class OpenAIIntakeService:
         if deterministic_facts.get("employment_type"):
             curr_ucs.domain_extensions.setdefault("employment", {})["employment_type"] = deterministic_facts["employment_type"]
             curr_ucs.known_facts.append({"fact": f"employment_type: {deterministic_facts['employment_type']}", "source": "user_statement"})
+        if deterministic_facts.get("amount") and not curr_ucs.financial.amount:
+            curr_ucs.financial.amount = deterministic_facts["amount"]
+        if deterministic_facts.get("amount_raw") and not curr_ucs.financial.amount_raw:
+            curr_ucs.financial.amount_raw = deterministic_facts["amount_raw"]
+        if deterministic_facts.get("dues_period") and not curr_ucs.financial.dues_period:
+            curr_ucs.financial.dues_period = deterministic_facts["dues_period"]
+        if deterministic_facts.get("written_contract"):
+            curr_ucs.domain_extensions.setdefault("employment", {})["written_contract"] = deterministic_facts["written_contract"]
+            curr_ucs.known_facts.append({"fact": f"written_contract: {deterministic_facts['written_contract']}", "source": "user_statement"})
 
         missing_facts = self._fallback_engine.evaluate_missing_facts(curr_ucs, user_messages_text=all_user_text)
         high_missing = [
@@ -301,8 +310,8 @@ class OpenAIIntakeService:
             "guidelines": (
                 "1. Distinguish facts vs legal hypotheses.\n"
                 "2. Spot all legal issues (multiple simultaneous issues).\n"
-                "3. If unresolved_high_priority_legal_questions are present, formulate your follow-up around the top unresolved question to split the legal regime!\n"
-                "4. Only set is_ready_for_qa = true when the key legal branches/prerequisites are resolved (or if user demanded advice).\n"
+                "3. If unresolved_high_priority_legal_questions are present, formulate your follow-up around the top unresolved question to establish essential facts (such as jurisdiction, sector, financial dues / unpaid salary, or written contract)!\n"
+                "4. Do NOT set is_ready_for_qa = true while unresolved_high_priority_legal_questions remain, unless the user explicitly demands immediate advice or all essential facts are established.\n"
                 "5. Never ask about information already established."
             ),
         }
@@ -632,6 +641,13 @@ Respond ONLY with a valid JSON object matching this structure:
         if extracted_facts.get("written_contract"):
             universal_state.domain_extensions.setdefault("employment", {})["written_contract"] = extracted_facts["written_contract"]
             universal_state.known_facts.append({"fact": f"written_contract: {extracted_facts['written_contract']}", "source": "user_statement"})
+        if extracted_facts.get("amount"):
+            universal_state.financial.amount = extracted_facts["amount"]
+        if extracted_facts.get("amount_raw"):
+            universal_state.financial.amount_raw = extracted_facts["amount_raw"]
+        if extracted_facts.get("dues_period"):
+            universal_state.financial.dues_period = extracted_facts["dues_period"]
+            universal_state.known_facts.append({"fact": f"dues_period: {extracted_facts['dues_period']}", "source": "user_statement"})
 
         is_ready = bool(parsed.get("is_ready_for_qa", False))
         followup = parsed.get("followup_question")
@@ -661,42 +677,58 @@ Respond ONLY with a valid JSON object matching this structure:
                 is_duplicate = self._is_question_duplicate(followup, previous_questions_lower)
 
             # PROGRAMMATIC READINESS GATE:
-            # 1. Hard Turn Cap or user demand -> MUST be ready!
-            if user_demanded_advice or user_msg_count >= 3:
+            # 1. Hard Turn Cap (5 user turns) or user explicitly demanded advice -> MUST be ready!
+            if user_demanded_advice or user_msg_count >= 5:
                 is_ready = True
                 followup = None
-            elif not is_ready:
-                # LLM determined more info is needed
-                if not followup or is_duplicate:
-                    unasked = [
-                        m for m in high_priority_missing
-                        if not self._is_question_duplicate(m.sample_question, previous_questions_lower)
-                    ]
-                    if unasked:
-                        top_missing = unasked[0]
-                        reason_text = f"\n*(Why this matters: {top_missing.reason})*" if top_missing.reason else ""
-                        followup = f"{top_missing.sample_question}{reason_text}"
-                    else:
-                        is_ready = True
-                        followup = None
             else:
-                # LLM claimed it is ready:
-                if not synthesized_query and not user_demanded_advice and user_msg_count < 2 and high_priority_missing:
-                    unasked = [
-                        m for m in high_priority_missing
-                        if not self._is_question_duplicate(m.sample_question, previous_questions_lower)
-                    ]
-                    if unasked:
-                        is_ready = False
+                unasked = [
+                    m for m in high_priority_missing
+                    if not self._is_question_duplicate(m.sample_question, previous_questions_lower)
+                ]
+
+                # Check if financial dues/amount is mandatory for this domain and still missing/unasked
+                financial_domains = {"employment", "property", "consumer", "contract"}
+                financial_missing = (
+                    domain in financial_domains
+                    and not (universal_state.financial.amount or universal_state.financial.amount_raw or universal_state.financial.dues_period)
+                    and any("dues" in m.fact_key or "amount" in m.fact_key or "rent" in m.fact_key for m in unasked)
+                )
+
+                # Check core pillar facts: jurisdiction & sector/employment_type
+                jurisdiction_missing = not (universal_state.jurisdiction.state or universal_state.jurisdiction.city) and any("jurisdiction" in m.fact_key or "state" in m.fact_key for m in unasked)
+                sector_missing = domain == "employment" and not extracted_facts.get("employment_type") and any("employment_type" in m.fact_key for m in unasked)
+
+                critical_missing = financial_missing or jurisdiction_missing or sector_missing
+
+                if critical_missing:
+                    # Intake cannot finish without core factual dimensions
+                    is_ready = False
+                    if not followup or is_duplicate or parsed.get("is_ready_for_qa"):
+                        # Pick the critical missing question (prioritize financial dues if jurisdiction/sector known)
+                        crit_fact = next(
+                            (m for m in unasked if (financial_missing and ("dues" in m.fact_key or "amount" in m.fact_key or "rent" in m.fact_key))
+                             or (jurisdiction_missing and ("jurisdiction" in m.fact_key or "state" in m.fact_key))
+                             or (sector_missing and "employment_type" in m.fact_key)),
+                            unasked[0]
+                        )
+                        reason_text = f"\n*(Why this matters: {crit_fact.reason})*" if crit_fact.reason else ""
+                        followup = f"{crit_fact.sample_question}{reason_text}"
+                elif unasked and not (parsed.get("is_ready_for_qa") and not followup and parsed.get("synthesized_query")):
+                    # Unasked secondary facts exist and LLM did not explicitly finalize
+                    is_ready = False
+                    if not followup or is_duplicate:
                         top_missing = unasked[0]
                         reason_text = f"\n*(Why this matters: {top_missing.reason})*" if top_missing.reason else ""
                         followup = f"{top_missing.sample_question}{reason_text}"
+                else:
+                    # Core pillars satisfied or unasked is empty:
+                    # If LLM provided a valid, non-duplicate follow-up (e.g. summary confirmation), respect it:
+                    if followup and not is_duplicate and not parsed.get("is_ready_for_qa"):
+                        is_ready = False
                     else:
                         is_ready = True
                         followup = None
-                else:
-                    is_ready = True
-                    followup = None
 
         if is_ready:
             followup = None
@@ -706,13 +738,16 @@ Respond ONLY with a valid JSON object matching this structure:
                 loc_full = f"{city_str}, {jurisdiction_str}".strip(", ")
                 emp_type = extracted_facts.get("employment_type") or universal_state.domain_extensions.get("employment", {}).get("employment_type") or ""
                 core_issue = universal_state.case_type or extracted_facts.get("core_issue") or "wrongful termination"
+                dues_str = universal_state.financial.amount_raw or (f"₹{universal_state.financial.amount:,.0f}" if universal_state.financial.amount else universal_state.financial.dues_period) or ""
+                dues_line = f"  - Pending Dues / Amount: {dues_str}\n" if dues_str else ""
                 initial_statement = user_messages[0] if user_messages else ""
                 synthesized_query = (
                     f"Client's legal concern: {initial_statement}\n\n"
                     f"Relevant details established:\n"
                     f"  - Jurisdiction: {loc_full}\n"
                     f"  - Core Issue: {core_issue}\n"
-                    f"  - Sector/Type: {emp_type or 'unspecified'}\n\n"
+                    f"  - Sector/Type: {emp_type or 'unspecified'}\n"
+                    f"{dues_line}\n"
                     f"Spotted legal issues:\n"
                     f"  - {core_issue}\n\n"
                     f"Address the recipient directly as 'you' in second person. Based on the above, what direct actionable "

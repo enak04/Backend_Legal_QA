@@ -219,16 +219,22 @@ class DomainRegistry:
                 risk_indicators=["Statutory limitation for wage recovery", "Destruction of workplace communications"],
                 high_value_questions=[
                     {
+                        "fact_key": "jurisdiction_state",
+                        "importance": "HIGH",
+                        "reason": "Labor and Shops & Establishments regulations vary strictly by state",
+                        "question": "In which State or City were you employed?",
+                    },
+                    {
                         "fact_key": "employment_type",
                         "importance": "HIGH",
                         "reason": "Determines applicable statutory regime (Shops & Establishments Act vs Industrial Disputes Act vs Civil Court)",
                         "question": "Was this a private company/firm, or a government/PSU organization?",
                     },
                     {
-                        "fact_key": "jurisdiction_state",
+                        "fact_key": "financial_dues",
                         "importance": "HIGH",
-                        "reason": "Labor and Shops & Establishments regulations vary strictly by state",
-                        "question": "In which state were you working?",
+                        "reason": "Determines statutory wage claims under Payment of Wages Act or Section 33C Industrial Disputes Act",
+                        "question": "Are there any unpaid salary, notice pay, gratuity, or pending dues, and what is the approximate amount remaining?",
                     },
                     {
                         "fact_key": "written_contract",
@@ -323,6 +329,12 @@ class DomainRegistry:
                         "importance": "HIGH",
                         "reason": "Urgent dispossession requires immediate emergency injunction within 6 months",
                         "question": "Are you currently locked out, or are you still inside the premises facing eviction threats?",
+                    },
+                    {
+                        "fact_key": "security_deposit_or_rent",
+                        "importance": "HIGH",
+                        "reason": "Determines financial recovery claims, interest on withheld security deposits, and court pecuniary limits",
+                        "question": "What is the monthly rent and the amount of security deposit remaining with the landlord?",
                     },
                 ],
             )

@@ -293,7 +293,17 @@ def extract_facts(text: str, last_question_key: str | None = None) -> dict[str, 
     if date_rel_match:
         facts["relative_date"] = date_rel_match.group(1)
 
-    # 4. Employment Type (Check government before general company)
+    # 4. Dues & Pending Salary / Compensation
+    dues_match = re.search(
+        r"(?:\b\d+\s*(?:months?|weeks?|days?)\s*(?:salary|wages?|pay|dues?|compensation)\b|(?:salary|wages?|pay|dues?|compensation)\s*(?:for|of)?\s*\d+\s*(?:months?|weeks?|days?)\b)",
+        text_lower,
+    )
+    if dues_match:
+        facts["dues_period"] = dues_match.group(0)
+    elif re.search(r"\b(no pending salary|no unpaid salary|fully paid|no dues|all cleared|cleared my salary)\b", text_lower):
+        facts["dues_period"] = "no pending dues"
+
+    # 5. Employment Type (Check government before general company)
     if re.search(r"\b(government|govt|psu|civil servant|public sector)\b", text_lower):
         facts["employment_type"] = "government"
     elif re.search(r"\b(private|startup|tech firm|company|mnc|corporate)\b", text_lower):
@@ -542,9 +552,12 @@ class FollowUpEngine:
                 for a in state.actions_already_taken
             ) or any(w in combined_text for w in ["fir", "police complaint", "cybercrime", "1930", "disputed with bank"])
 
-        if "amount" in key or "paid" in key or "loss" in key or "value" in key:
-            return bool(state.financial.amount or state.financial.amount_raw) or bool(
-                re.search(r"(?:rs\.?|₹|\blakh|\bcrore)\s*[\d,]+", combined_text)
+        if "amount" in key or "paid" in key or "loss" in key or "value" in key or "due" in key or "salary" in key or "deposit" in key or "rent" in key:
+            return bool(state.financial.amount or state.financial.amount_raw or state.financial.dues_period) or bool(
+                re.search(
+                    r"(?:rs\.?|₹|\blakh|\bcrore)\s*[\d,]+|(?:\b\d+\s*(?:month|day|week)s?\s*(?:salary|pay|wages|dues)|(?:salary|pay|wages|dues)\s*(?:for|of)?\s*\d+\s*(?:month|day|week)s?)|\bno dues\b|\bno pending\b|\bpaid in full\b|\bcleared\b|\bdeposit\b",
+                    combined_text,
+                )
             )
 
         if "date" in key or "timing" in key or "hour" in key or "duration" in key:
