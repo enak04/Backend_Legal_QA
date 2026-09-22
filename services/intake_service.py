@@ -365,7 +365,7 @@ class OpenAIIntakeService:
         prompt_parts.append(
             """
 ### Output JSON Schema:
-Respond ONLY with a valid JSON object matching this structure:
+Respond ONLY with a valid compact JSON object matching this structure:
 {
   "jurisdiction": {
     "country": "India",
@@ -379,88 +379,24 @@ Respond ONLY with a valid JSON object matching this structure:
       {
         "issue": "string",
         "domain": "string",
-        "status": "hypothesis | confirmed",
-        "confidence": float,
-        "applicable_laws": ["string"]
+        "status": "hypothesis | confirmed"
       }
     ],
     "summary": "string"
   },
-  "parties": [
-    {
-      "role": "string",
-      "name_or_description": "string",
-      "entity_type": "string or null"
-    }
-  ],
   "financial": {
     "amount": float or null,
-    "amount_raw": "string or null",
-    "currency": "INR",
-    "loss": "string or null"
-  },
-  "dates": {
-    "incident_date": "string or null",
-    "notice_date": "string or null",
-    "deadline": "string or null",
-    "filing_date": "string or null"
-  },
-  "evidence": [
-    {
-      "type": "string",
-      "description": "string",
-      "source": "user_mentioned | uploaded | available | unavailable",
-      "relevance": "string",
-      "available": boolean
-    }
-  ],
-  "actions_already_taken": [
-    {
-      "action": "string",
-      "details": "string"
-    }
-  ],
-  "user_goal": "string or null",
-  "risk": {
-    "level": "low | normal | potentially_urgent | urgent | emergency",
-    "flags": ["string"],
-    "reason": "string or null",
-    "recommended_emergency_action": "string or null"
-  },
-  "missing_facts": [
-    {
-      "fact_key": "string",
-      "description": "string",
-      "legal_importance": "HIGH | MEDIUM | LOW",
-      "reason": "string",
-      "sample_question": "string"
-    }
-  ],
-  "confidence": {
-    "facts": float,
-    "issue_classification": float,
-    "jurisdiction": float,
-    "legal_applicability": float,
-    "urgency": float
+    "amount_raw": "string or null"
   },
   "extracted_facts": {
     "detected_domain": "string",
     "state": "string or null",
+    "city": "string or null",
     "core_issue": "string or null",
-    "amount": "string or null",
-    "duration_or_dates": "string or null"
+    "amount": "string or null"
   },
-  "known_facts": [
-    {
-      "fact": "string",
-      "source": "user_statement | extracted | inferred",
-      "confidence": float,
-      "is_explicit": boolean
-    }
-  ],
   "is_ready_for_qa": boolean,
   "followup_question": "string or null (If asking a follow-up, provide empathetic legal acknowledgment first, then ask ONE natural, focused question probing the specific facts)",
-  "synthesized_query": "string or null",
   "direct_legal_answer": "string or null (MANDATORY if is_ready_for_qa is true: provide the complete, authoritative, second-person consultation guidance with Markdown sections: ### Understanding Your Situation, ### Your Legal Rights & Applicable Laws, ### What You Should Do Now, ### Important Timelines, ### Documents to Preserve, and ### A Word of Caution. Keep under 400 words.)"
 }
 """
