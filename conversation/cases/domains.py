@@ -124,6 +124,14 @@ class DomainDefinition(BaseModel):
     risk_indicators: list[str]
     emergency_relief: str | None = None
     high_value_questions: list[dict[str, Any]] = Field(default_factory=list)
+    required_documents: list[str] = Field(default_factory=list)
+    evidentiary_fallback_strategy: list[str] = Field(default_factory=list)
+
+    def get_jurisdiction_question(self) -> str:
+        for q in self.high_value_questions:
+            if q.get("fact_key") in ("jurisdiction_state", "jurisdiction"):
+                return q.get("question", "In which State or City did this occur?")
+        return "To determine the proper legal forum and applicable state laws, could you please confirm which State or City you are located in?"
 
 
 class DomainRegistry:
@@ -232,7 +240,7 @@ class DomainRegistry:
                     },
                     {
                         "fact_key": "written_contract",
-                        "importance": "HIGH",
+                        "importance": "MEDIUM",
                         "reason": "Dictates contractual notice terms and binding dispute resolution clauses",
                         "question": "Do you have a written employment contract, offer letter, or appointment letter?",
                     },
@@ -248,6 +256,19 @@ class DomainRegistry:
                         "reason": "Shows whether employer complied with statutory 30-day notice or wages in lieu thereof",
                         "question": "Did your employer give you written termination notice or reasons, or was it verbal?",
                     },
+                ],
+                required_documents=[
+                    "Formal written Offer Letter, Appointment Letter, or Employment Agreement setting out terms of service and notice period",
+                    "Official written Termination Letter, Dismissal Order, or Show Cause Notice (if issued)",
+                    "Monthly Payslips or Salary Slips for the last 3 to 6 months of employment",
+                    "Bank Account Statements highlighting salary credit history and the date of cessation of pay",
+                    "All written communications, termination emails, resignation correspondence, or WhatsApp/Slack chat records",
+                    "Proof of statutory deductions: Provident Fund (PF/UAN) passbook, Form 16, and Gratuity nomination records",
+                ],
+                evidentiary_fallback_strategy=[
+                    "If formal employment contract is missing: Rely on appointment emails, monthly bank salary credit descriptions, company ID card, PF/EPFO member passbook records, or work email threads to establish employer-employee relationship.",
+                    "If termination was verbal without written notice: Reconstruct chronological contemporaneous records by sending an immediate written email/letter recording the date, time, and exact verbal words spoken by the employer, and preserve all access-revocation timestamps (email deactivation, biometric card blocking).",
+                    "If salary slips are withheld by employer: Bank account statements demonstrating regular monthly credits from the employer's entity account serve as primary secondary proof of wages under the Payment of Wages Act.",
                 ],
             )
         )
@@ -289,6 +310,19 @@ class DomainRegistry:
                         "question": "Have you sent a formal written complaint or legal notice demanding replacement/refund?",
                     },
                 ],
+                required_documents=[
+                    "Tax Invoice, Cash Memo, or Bill of Purchase with GSTIN, seller details, date, and description",
+                    "Manufacturer / Seller Warranty Card or Extended Warranty Policy Certificate",
+                    "Authorized Service Center Job Sheets, Inspection Reports, or Repair Invoices detailing defects",
+                    "Written grievance emails, ticket numbers, or customer care escalation logs sent to seller/manufacturer",
+                    "Photographs, unboxing videos, or video recordings clearly demonstrating the defect or deficiency",
+                    "Payment transaction receipt, credit card charge slip, or UPI confirmation",
+                ],
+                evidentiary_fallback_strategy=[
+                    "If invoice is lost: Request duplicate invoice from seller/e-commerce platform, or submit bank/credit card transaction statements coupled with delivery confirmation emails/SMS.",
+                    "If service center refuses job sheet: Record interactions, capture video of product malfunction with date stamp, and send a registered email/letter demanding inspection within 48 hours.",
+                    "For e-commerce transactions: Archive order page screenshots, delivery tracking records, and return request rejection logs.",
+                ],
             )
         )
 
@@ -314,7 +348,7 @@ class DomainRegistry:
                 high_value_questions=[
                     {
                         "fact_key": "agreement_and_registration",
-                        "importance": "HIGH",
+                        "importance": "MEDIUM",
                         "reason": "Determines applicable statutory protection (registered lease vs leave and license)",
                         "question": "Do you have a written or registered rental/lease agreement, and what is the remaining duration?",
                     },
@@ -332,10 +366,23 @@ class DomainRegistry:
                     },
                     {
                         "fact_key": "security_deposit_or_rent",
-                        "importance": "HIGH",
+                        "importance": "MEDIUM",
                         "reason": "Determines financial recovery claims, interest on withheld security deposits, and court pecuniary limits",
                         "question": "What is the monthly rent and the amount of security deposit remaining with the landlord?",
                     },
+                ],
+                required_documents=[
+                    "Registered Lease / Rent Agreement or Leave and License Agreement (or notarized tenancy deed)",
+                    "Security Deposit transfer receipt, cheque record, or bank transaction confirmation",
+                    "Monthly rent receipts or bank/UPI transaction statements showing consistent rent payments",
+                    "Official Written Notice to Vacate, Demand Notice, or Landlord's eviction communication",
+                    "Utility bills (Electricity / Water / Municipal Tax receipts) establishing continuous physical possession",
+                    "Photographs or video evidence of any illegal lockout, property damage, or utility disconnection",
+                ],
+                evidentiary_fallback_strategy=[
+                    "If tenancy agreement is oral or unregistered: Rely on rent payment bank credits/UPI logs, utility bills in occupant's name, postal receipts, courier deliveries, or neighbor affidavits establishing settled possession.",
+                    "If locked out or dispossessed without due process: File immediate police diary entry/112 call record, obtain timestamped video of locked doors, and file a summary suit under Section 6 of the Specific Relief Act within 6 months.",
+                    "For security deposit withholding: Reconstruct move-in and move-out condition via handover inspection photos, keys handover receipt, and WhatsApp messages acknowledging return of premises.",
                 ],
             )
         )
@@ -378,6 +425,19 @@ class DomainRegistry:
                         "reason": "Affects whether investigation proceeds against named perpetrators or unknown persons",
                         "question": "Do you know the identity, names, or contact details of the perpetrators?",
                     },
+                ],
+                required_documents=[
+                    "Medico-Legal Certificate (MLC) or Emergency Hospital Discharge Summary documenting injuries",
+                    "First Information Report (FIR) copy or written Police Complaint acknowledgment / General Diary (GD) entry receipt",
+                    "CCTV camera footage, mobile video recordings, or audio recordings of the incident/altercation",
+                    "Screenshots, call detail records (CDR), WhatsApp chats, or letters demonstrating criminal intimidation or threats",
+                    "Independent eyewitness names, contact information, and written statements",
+                    "Proof of financial loss, stolen property ownership documents, or valuation bills (in theft/cheating)",
+                ],
+                evidentiary_fallback_strategy=[
+                    "If police station refuses to register FIR: Submit written complaint to Superintendent of Police / Commissioner under Section 175(3) BNSS (154(3) CrPC) by Registered Post AD, followed by Section 175(4) BNSS application before the Judicial Magistrate.",
+                    "If private medical clinic did not issue MLC: Immediately visit a government district hospital emergency department stating cause of injury was physical assault to create official government medical record.",
+                    "For electronic evidence (audio/video/chats): Preserve original recording device without alteration and prepare Section 63 Bharatiya Sakshya Adhiniyam (BSA 2023) / 65B Indian Evidence Act certificate.",
                 ],
             )
         )
@@ -427,6 +487,19 @@ class DomainRegistry:
                         "question": "Was an OTP or password shared with anyone, or did the transaction happen without any sharing?",
                     },
                 ],
+                required_documents=[
+                    "Bank / Credit Card Statement showing exact debit timestamp, transaction amount, and recipient account/UPI ID/UTR number",
+                    "SMS alerts and email notifications received from bank regarding unauthorized debit",
+                    "Complaint acknowledgment receipt from National Cybercrime Reporting Portal (cybercrime.gov.in) or 1930 Helpline Citizen Copy",
+                    "Written fraud intimation submitted to Home Bank branch with official receiving stamp and date",
+                    "Screenshots of fraudulent phishing links, payment gateway prompts, fake caller IDs, or WhatsApp/Telegram chats",
+                    "Device details (IMEI number, IP address logs, browser history) if device was compromised by remote desktop apps",
+                ],
+                evidentiary_fallback_strategy=[
+                    "If bank delays dispute acknowledgement: Send written notice via registered email to the Principal Nodal Officer of the bank within 72 hours, explicitly quoting RBI Master Circular 2017 for Zero Customer Liability.",
+                    "If recipient account is in another bank: Immediately escalate complaint number 1930 to National Cybercrime Portal to trigger CFCFRMS (Citizen Financial Cyber Fraud Reporting & Management System) interstate account freeze.",
+                    "If remote access software (AnyDesk/TeamViewer) was used: Uninstall app, preserve connection session ID logs, and obtain device technical diagnostic certificate for evidentiary submission.",
+                ],
             )
         )
 
@@ -468,6 +541,19 @@ class DomainRegistry:
                         "reason": "Forms the basis of interim maintenance calculation under Supreme Court guidelines (Rajnesh v. Neha)",
                         "question": "What is your spouse's occupation or estimated income, and do you have an independent source of income?",
                     },
+                ],
+                required_documents=[
+                    "Marriage Certificate (under Hindu Marriage Act / Special Marriage Act / relevant personal law) or wedding invitations/photographs",
+                    "Birth certificates and school fee receipts for minor children",
+                    "Bank statements of both parties for the last 12 to 24 months demonstrating standard of living and income disparity",
+                    "Income Tax Returns (ITR), Form 16, or salary slips of respondent spouse (if available)",
+                    "Medical records, MLC reports, or police complaint receipts (in cases involving domestic violence or cruelty)",
+                    "Detailed monthly household expenditure statement supported by grocery, rent, and medical receipts",
+                ],
+                evidentiary_fallback_strategy=[
+                    "If spouse's true income is concealed: File Application for Comprehensive Affidavit of Assets and Liabilities pursuant to Supreme Court guidelines in Rajnesh v. Neha (2020), mandating disclosure of all bank accounts, investments, and tax filings under oath.",
+                    "If marriage certificate was not registered: Establish valid marriage through joint bank accounts, passport entries naming spouse, Aadhaar card address endorsements, and wedding photograph albums.",
+                    "If domestic cruelty occurred within shared household: Rely on WhatsApp chats, contemporaneous audio/video recordings, diary entries, and neighbor/relative corroborating statements under Section 12 PWDVA.",
                 ],
             )
         )
@@ -511,6 +597,19 @@ class DomainRegistry:
                         "question": "When was the work supposed to be completed, and when did they stop responding?",
                     },
                 ],
+                required_documents=[
+                    "Executed Contract, Service Level Agreement (SLA), Master Services Agreement (MSA), or Purchase Order (PO)",
+                    "Signed Invoices, Delivery Challans, or Milestone Completion Certificates accepted by opposite party",
+                    "Bank account statements or RTGS/NEFT/UPI transfer counterfoils proving payments made or unpaid invoices",
+                    "Written Formal Demand Notice / Legal Notice along with Postal Dispatch Slip and Delivery Tracking Report",
+                    "Email correspondence, WhatsApp messages, or minutes of meeting showing clear acknowledgment of debt or liability",
+                    "Dishonored Cheque (original) with Bank Return Memo stating 'Funds Insufficient' (if Negotiable Instruments Act Section 138 claim)",
+                ],
+                evidentiary_fallback_strategy=[
+                    "If contract is oral: Reconstruct binding agreement using purchase orders, invoice acceptances, part-payments credited to bank accounts, WhatsApp confirmation of terms, and delivery receipts under Section 8 of the Indian Contract Act.",
+                    "To prevent claim being barred by limitation: Identify any email, letter, or part-payment made within 3 years that constitutes a valid written acknowledgment of liability under Section 18 of the Limitation Act, 1963.",
+                    "For commercial disputes exceeding ₹3 Lakhs: Initiate mandatory Pre-Institution Mediation under Section 12A of the Commercial Courts Act, 2015 prior to filing suit.",
+                ],
             )
         )
 
@@ -552,6 +651,19 @@ class DomainRegistry:
                         "reason": "Threats of demolition, arrest, or property sealing require emergency writ petition for stay",
                         "question": "Does the notice threaten immediate action like sealing, demolition, or penalties?",
                     },
+                ],
+                required_documents=[
+                    "Original Government Show Cause Notice, Sealing Notice, Demolition Order, or Penalty Memo received",
+                    "Postal envelope / Speed Post tracking slip / Email header showing exact date of receipt of notice",
+                    "Sanctioned Building Plan, Trade License, Occupancy Certificate, or statutory NOCs issued by municipal authorities",
+                    "Written Representation / Reply submitted to the government department with official inward/acknowledgment seal",
+                    "RTI Application filed and Public Information Officer (PIO) / First Appellate Authority replies received",
+                    "Relevant Gazetted Notification, Rules, or Bye-laws under which authority claims power",
+                ],
+                evidentiary_fallback_strategy=[
+                    "If government files/reasons are withheld: Immediately file Urgent Right to Information (RTI) application under Section 7(1) RTI Act (or standard application) to inspect official file notings and departmental processing sheets.",
+                    "If threatened with immediate arbitrary demolition/sealing without hearing: Draft emergency Writ Petition under Article 226 of the Constitution of India citing violation of natural justice (audi alteram partem) and seek ad-interim status quo.",
+                    "If department refuses to accept written reply: Send reply by Speed Post AD, email to designated official email ID, and upload on departmental grievance portal, preserving electronic transmission logs.",
                 ],
             )
         )

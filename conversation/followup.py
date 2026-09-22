@@ -542,7 +542,8 @@ class FollowUpEngine:
                 w in combined_text
                 for w in [
                     "locked out", "in possession", "thrown out", "dispossessed",
-                    "evicted", "vacated", "still living", "occupying"
+                    "evicted", "vacated", "still living", "occupying",
+                    "changed lock", "changed locks", "lock changed", "locks changed", "padlock"
                 ]
             )
 
@@ -562,6 +563,11 @@ class FollowUpEngine:
 
         if "date" in key or "timing" in key or "hour" in key or "duration" in key:
             return bool(state.dates.incident_date or state.dates.notice_date)
+
+        if isinstance(state.domain_extensions, dict):
+            for ext_val in state.domain_extensions.values():
+                if isinstance(ext_val, dict) and ext_val.get(key) is not None:
+                    return True
 
         return False
 

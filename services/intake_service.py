@@ -477,7 +477,8 @@ Respond ONLY with a valid JSON object matching this structure:
             "what", "when", "where", "which", "who", "whom", "whose", "why", "how",
             "have", "has", "had", "does", "would", "should", "could", "your", "you",
             "about", "please", "case", "state", "share", "tell", "this", "that", "there",
-            "determine", "applicable", "framework", "regime", "claim", "under", "statutory"
+            "determine", "applicable", "framework", "regime", "claim", "under", "statutory",
+            "city", "legal", "court", "authority", "forum", "details"
         }
         q_words = {
             re.sub(r"[^\w]", "", w)
@@ -499,7 +500,28 @@ Respond ONLY with a valid JSON object matching this structure:
                 if len(w) > 3 and re.sub(r"[^\w]", "", w) not in stop_words
             }
             shared = q_words & prev_words
-            if len(shared) >= 2 or (q_words and len(shared) / len(q_words) >= 0.4):
+            if len(shared) >= 3 or (q_words and len(shared) / len(q_words) >= 0.6):
+                return True
+        return False
+
+    def _is_fact_already_asked(self, fact: MissingFact, prev_questions: list[str]) -> bool:
+        """Check if a missing fact dimension has already been queried in conversation."""
+        if not prev_questions:
+            return False
+        if self._is_question_duplicate(fact.sample_question, prev_questions):
+            return True
+        key = fact.fact_key.lower()
+        for prev in prev_questions:
+            p = prev.lower()
+            if key in ("employment_type", "employer_type") and any(w in p for w in ["private", "government", "psu", "organization"]):
+                return True
+            if "jurisdiction" in key and any(w in p for w in ["state", "city", "located", "stationed"]):
+                return True
+            if ("amount" in key or "dues" in key or "financial" in key) and any(w in p for w in ["dues", "salary", "unpaid", "amount", "gratuity"]):
+                return True
+            if "contract" in key and any(w in p for w in ["contract", "offer letter", "appointment letter", "agreement"]):
+                return True
+            if "possession" in key and any(w in p for w in ["locked out", "possession", "vacate"]):
                 return True
         return False
 
@@ -710,23 +732,11 @@ Respond ONLY with a valid JSON object matching this structure:
             if followup:
                 is_duplicate = self._is_question_duplicate(followup, previous_questions_lower)
 
-            # Build unasked list without filtering out facts that are still completely missing
-            unasked: list[MissingFact] = []
-            for m in high_priority_missing:
-                fact_still_missing = False
-                if m.fact_key in ("jurisdiction_state", "jurisdiction"):
-                    fact_still_missing = not has_jurisdiction
-                elif "amount" in m.fact_key or "dues" in m.fact_key or "financial" in m.fact_key:
-                    fact_still_missing = not (universal_state.financial.amount or universal_state.financial.amount_raw or universal_state.financial.dues_period)
-                elif "contract" in m.fact_key or "document" in m.fact_key:
-                    fact_still_missing = not (universal_state.evidence or (isinstance(universal_state.domain_extensions, dict) and universal_state.domain_extensions.get("employment", {}).get("written_contract")))
-                elif "employment_type" in m.fact_key or "employer" in m.fact_key:
-                    fact_still_missing = not has_employment_type
-                else:
-                    fact_still_missing = True
-
-                if fact_still_missing or not self._is_question_duplicate(m.sample_question, previous_questions_lower):
-                    unasked.append(m)
+            # Build unasked list: high priority facts for this domain that have not yet been queried
+            unasked: list[MissingFact] = [
+                m for m in high_priority_missing
+                if not self._is_fact_already_asked(m, previous_questions_lower)
+            ]
 
             # PROGRAMMATIC READINESS & ADVOCATE JURISDICTION GATE:
             if user_asked_state_relevance:
@@ -739,66 +749,24 @@ Respond ONLY with a valid JSON object matching this structure:
                 is_ready = True
                 followup = None
             else:
-                # If the LLM formulated a valid conversational follow-up question, preserve it:
                 if followup and not is_duplicate and not parsed.get("is_ready_for_qa"):
+                    # LLM asked a valid, non-duplicate conversational follow-up question — respect it!
                     is_ready = False
                 elif not has_jurisdiction:
                     # Strict Advocate Invariant: Cannot provide final actionable remedies without territorial jurisdiction
                     is_ready = False
-                    loc_q = (
-                        "To determine the proper legal forum, tribunal bench, and applicable statutory authorities having territorial jurisdiction over your claim, could you please share which State or City you were employed or stationed in?"
-                        if "employment" in universal_state.case_domain
-                        else "To determine the proper legal forum and applicable state laws, could you please confirm which State or City you are located in?"
-                    )
-                    followup = loc_q
+                    domain_def = domain_registry.get(universal_state.case_domain)
+                    followup = domain_def.get_jurisdiction_question() if domain_def else "To determine the proper legal forum and applicable state laws, could you please confirm which State or City you are located in?"
                     synthesized_query = None
-                elif (
-                    universal_state.case_domain == "employment"
-                    and not (universal_state.financial.amount or universal_state.financial.amount_raw or universal_state.financial.dues_period)
-                    and not user_demanded_advice
-                    and not self._is_question_duplicate("Are there any unpaid salary, notice pay, gratuity, or pending dues, and what is the approximate amount remaining?", previous_questions_lower)
-                ):
+                elif unasked and not user_demanded_advice:
+                    # Universal Schema Gate: If any HIGH pillar from the domain manifest is missing, ask it!
                     is_ready = False
-                    followup = "Are there any unpaid salary, notice pay, gratuity, or pending dues, and what is the approximate amount remaining?"
+                    top_missing = unasked[0]
+                    followup = top_missing.sample_question
                     synthesized_query = None
-                elif (
-                    universal_state.case_domain == "employment"
-                    and not has_employment_type
-                    and not user_demanded_advice
-                    and not self._is_question_duplicate("Was this a private company/firm, or a government/PSU organization?", previous_questions_lower)
-                ):
-                    # Strict Advocate Invariant: Cannot determine applicable statutory regime
-                    # (Shops & Establishments Act vs Administrative Tribunals Act vs IDA) without employer type!
-                    is_ready = False
-                    followup = "Was this a private company/firm, or a government/PSU organization?"
-                    synthesized_query = None
-                elif (
-                    universal_state.case_domain == "employment"
-                    and (universal_state.financial.amount or universal_state.financial.amount_raw or universal_state.financial.dues_period)
-                    and not any(term in all_user_text.lower() for term in ["written termination", "termination letter", "dismissal order", "show cause", "verbal", "verbally", "oral", "no letter", "no order"])
-                    and not user_demanded_advice
-                    and not self._is_question_duplicate("Did you receive an official written termination or dismissal order?", previous_questions_lower)
-                ):
-                    # A lawyer must know whether termination was by written order or verbal/informal
-                    is_ready = False
-                    followup = (
-                        "Did your employer or department issue you a formal written termination or dismissal order, or was your termination communicated verbally?"
-                    )
-                    synthesized_query = None
-                elif parsed.get("is_ready_for_qa") and parsed.get("synthesized_query") and not followup:
-                    latest_word_count = len(latest_msg.split())
-                    if unasked and len(unasked) >= 2 and latest_word_count < 8:
-                        is_ready = False
-                        top_missing = unasked[0]
-                        followup = top_missing.sample_question
-                    else:
-                        is_ready = True
-                        followup = None
-                elif unasked:
-                    is_ready = False
-                    if not followup or is_duplicate:
-                        top_missing = unasked[0]
-                        followup = top_missing.sample_question
+                elif parsed.get("is_ready_for_qa") and parsed.get("synthesized_query"):
+                    is_ready = True
+                    followup = None
                 else:
                     is_ready = True
                     followup = None
@@ -813,6 +781,8 @@ Respond ONLY with a valid JSON object matching this structure:
             formatted_amt = f"₹{raw_amt:,.0f}" if isinstance(raw_amt, (int, float)) else str(raw_amt or "")
             dues_str = universal_state.financial.amount_raw or (formatted_amt if formatted_amt else universal_state.financial.dues_period) or ""
             initial_statement = user_messages[0] if user_messages else ""
+
+            domain_def = domain_registry.get(universal_state.case_domain)
 
             # Check if government employee
             is_govt_emp = False
@@ -839,11 +809,13 @@ Respond ONLY with a valid JSON object matching this structure:
 
             facts_block = "\n".join(fact_bullets)
             if not synthesized_query or len(synthesized_query.strip()) < 120 or (is_govt_emp and "Tribunal" not in synthesized_query):
-                statute_focus = (
-                    "Administrative Tribunals Act 1985 (Section 19), Article 311 & Article 226 of the Constitution of India, and Payment of Wages / Gratuity provisions"
-                    if is_govt_emp
-                    else "relevant Indian statutory provisions and judicial forums"
-                )
+                if is_govt_emp:
+                    statute_focus = "Administrative Tribunals Act 1985 (Section 19), Article 311 & Article 226 of the Constitution of India, and Payment of Wages / Gratuity provisions"
+                elif domain_def and domain_def.primary_statutes:
+                    statute_focus = ", ".join(domain_def.primary_statutes[:3])
+                else:
+                    statute_focus = "relevant Indian statutory provisions and judicial forums"
+
                 synthesized_query = (
                     f"Client's legal concern: {initial_statement}\n\n"
                     f"Relevant details established:\n"

@@ -444,4 +444,63 @@ class TestConversationManagerWithOpenAI:
             assert any(w in res.followup_question.lower() for w in ["private", "government", "psu", "employer"])
 
 
+class TestDeclarativeDomainIntake:
+    """Tests verifying purely declarative, schema-driven intake across multiple legal domains."""
+
+    def test_all_domains_have_rich_evidence_and_fallback_manifests(self):
+        """All 8 registered domains must provide required documents and fallback strategies."""
+        from conversation.cases.domains import domain_registry
+
+        core_domains = ["employment", "consumer", "property", "criminal", "cybercrime", "family", "contract", "government"]
+        for domain_name in core_domains:
+            domain_def = domain_registry.get(domain_name)
+            assert domain_def is not None, f"Domain {domain_name} missing from registry"
+            assert len(domain_def.required_documents) >= 3, f"Domain {domain_name} lacks documentary checklist"
+            assert len(domain_def.evidentiary_fallback_strategy) >= 2, f"Domain {domain_name} lacks fallback strategies"
+            assert domain_def.get_jurisdiction_question() is not None
+
+    def test_grounded_generator_pulls_evidence_dynamically_from_domain_manifest(self):
+        """Verify LegalAssessment evidence checklist is constructed dynamically from domain registry."""
+        from legal_qa.grounded_generator import GroundedLegalAnswerGenerator
+        from conversation.cases.models import UniversalCaseState, Jurisdiction, Financial
+
+        gen = GroundedLegalAnswerGenerator()
+        for d in ["consumer", "property", "cybercrime", "contract", "criminal", "family", "government"]:
+            state = UniversalCaseState(
+                case_domain=d,
+                jurisdiction=Jurisdiction(state="Maharashtra", city="Mumbai"),
+                financial=Financial(amount=50000.0, amount_raw="₹50,000"),
+            )
+            evidence_data = gen._build_evidence_assessment(state, domain=d, is_govt=False)
+            assert len(evidence_data["required_documents_checklist"]) >= 3
+            assert len(evidence_data["evidentiary_fallback_strategy"]) >= 2
+
+    @pytest.mark.asyncio
+    async def test_cybercrime_schema_driven_gate(self, mock_openai_response):
+        """Verify cybercrime intake asks financial loss and reporting before closing."""
+        service = OpenAIIntakeService(api_key="sk-test-key")
+        state = ConversationRecord(mode=Mode.ACTIONABLE)
+        add_user_message(state, "Someone stole money from my bank account online in Delhi")
+
+        # OpenAI claims ready prematurely without knowing amount or reporting status
+        openai_payload = {
+            "case": {"domain": "cybercrime"},
+            "jurisdiction": {"country": "India", "state": "Delhi", "city": "Delhi"},
+            "is_ready_for_qa": True,
+            "followup_question": None,
+            "synthesized_query": "Online financial fraud in Delhi...",
+        }
+
+        with patch.object(
+            service._client.chat.completions,
+            "create",
+            new_callable=AsyncMock,
+            return_value=mock_openai_response(openai_payload),
+        ):
+            res = await service.analyze_turn(state, "Someone stole money from my bank account online in Delhi")
+            assert not res.is_ready_for_qa, "Cybercrime intake must not close without financial loss or reporting details!"
+            assert res.followup_question is not None
+
+
+
 

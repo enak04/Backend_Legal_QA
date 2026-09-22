@@ -17,6 +17,7 @@ from typing import Any
 
 from openai import AsyncOpenAI
 
+from conversation.cases.domains import domain_registry
 from conversation.cases.models import (
     LegalAssessment,
     RetrievedAuthority,
@@ -335,79 +336,32 @@ class GroundedLegalAnswerGenerator:
         3. Evidentiary fallback strategy if documents are missing or withheld
         """
         d = domain.lower()
-        required_docs: list[str] = []
-        fallback_strategy: list[str] = []
+        domain_def = domain_registry.get(domain)
 
-        if "employment" in d or "salary" in d:
-            if is_govt:
-                required_docs = [
-                    "Appointment Letter / Service Confirmation Order",
-                    "Official Termination / Dismissal Order or Show Cause Notice",
-                    "Departmental Inquiry Officer's Report and Findings (if inquiry was conducted)",
-                    "Last 3-6 months' Salary Slips / Bank Account Statement showing non-payment of ₹3 Lakh dues",
-                    "Copies of statutory representations or appeals filed before the Departmental Appellate Authority"
-                ]
-                fallback_strategy = [
-                    "If official termination order or inquiry findings are withheld: File an urgent application under Section 6 of the Right to Information (RTI) Act, 2005 requesting certified copies of the termination order, inquiry report, and file notings.",
-                    "If appointment order is missing: Use Bank Account salary credit statements, GPF/NPS statement, Service Book extract, and Employee ID Card as secondary proof of government employment.",
-                    "If unpaid dues calculation is disputed: Submit a requisition under RTI for the LPC (Last Pay Certificate) and due-drawn statement from the DDO (Drawing and Disbursing Officer)."
-                ]
-            else:
-                required_docs = [
-                    "Offer Letter / Employment Agreement (stating designation, salary, notice period clause)",
-                    "Formal Termination Letter / Email stating grounds for dismissal",
-                    "Salary slips for the last 3 months + Bank statements reflecting salary credits and non-payment",
-                    "Full & Final (F&F) settlement statement or email correspondence demanding pending dues",
-                    "EPFO / UAN passbook showing employment tenure and PF contributions"
-                ]
-                fallback_strategy = [
-                    "If written employment contract is missing: Produce Bank statements showing regular monthly salary credits from the employer, EPFO UAN ledger, ESIC registration, company email signature, and ID card as conclusive secondary proof of employment.",
-                    "If termination was verbal without written notice: Immediately send an email/speed post letter placing on record that you reported for duty and were verbally turned away; demand written reasons and formal notice under protest.",
-                    "If dues records are withheld by employer: Move an application under Section 33C(2) Industrial Disputes Act / Payment of Wages Act requiring the employer to produce wage registers and muster rolls before the Authority."
-                ]
-        elif "property" in d or "tenant" in d:
+        if is_govt and ("employment" in d or "salary" in d):
             required_docs = [
-                "Registered Lease / Leave and License Agreement",
-                "Rent receipts / Bank UPI transaction statements proving regular payment of rent",
-                "Security deposit payment receipt / bank debit reference",
-                "Formal written notice of termination/eviction (if served)",
-                "Photographs / Police Diary (GD) entry of lockout or utility disconnection"
+                "Appointment Letter / Service Confirmation Order",
+                "Official Termination / Dismissal Order or Show Cause Notice",
+                "Departmental Inquiry Officer's Report and Findings (if inquiry was conducted)",
+                "Last 3-6 months' Salary Slips / Bank Account Statement showing non-payment of pending dues",
+                "Copies of statutory representations or appeals filed before the Departmental Appellate Authority",
             ]
             fallback_strategy = [
-                "If written agreement is oral or expired: Use monthly bank/UPI rent debit statements and electricity/gas bills in client's name to prove settled possession.",
-                "If landlord cuts off electricity or water: File an emergency application under Section 29 Maharashtra Rent Control Act / state equivalent before the Rent Controller / Civil Court for immediate restoration with police assistance."
+                "If official termination order or inquiry findings are withheld: File an urgent application under Section 6 of the Right to Information (RTI) Act, 2005 requesting certified copies of the termination order, inquiry report, and file notings.",
+                "If appointment order is missing: Use Bank Account salary credit statements, GPF/NPS statement, Service Book extract, and Employee ID Card as secondary proof of government employment.",
+                "If unpaid dues calculation is disputed: Submit a requisition under RTI for the LPC (Last Pay Certificate) and due-drawn statement from the DDO (Drawing and Disbursing Officer).",
             ]
-        elif "consumer" in d:
-            required_docs = [
-                "Tax Invoice / Retail Bill of Purchase",
-                "Warranty Card / Product Guarantee Certificate",
-                "Authorized Service Center Inspection Report / Job Sheet acknowledging the defect",
-                "Written complaint / email chain / support chat transcripts requesting repair/replacement/refund",
-                "Formal 15-day statutory legal notice served on manufacturer and seller"
-            ]
-            fallback_strategy = [
-                "If physical bill is lost: Download electronic invoice from the e-commerce portal, or obtain transaction confirmation from credit card / UPI bank statement under Rule 5 of Consumer Protection (E-Commerce) Rules, 2020.",
-                "If service center refused to give job sheet: Send an email capturing the refusal with date and time of visit, and file complaint on the National Consumer Helpline (consumerhelpline.gov.in / 1915) to establish documentary trail."
-            ]
-        elif "cyber" in d:
-            required_docs = [
-                "Bank Account Statement showing unauthorized debit transactions with UTR/Transaction IDs",
-                "Copy of formal written zero-liability complaint submitted to bank within 72 hours",
-                "Acknowledgment receipt from National Cyber Crime Reporting Portal (cybercrime.gov.in / 1930)",
-                "Screenshots of fraudulent SMS, phishing links, spoofed emails, or communication channels"
-            ]
-            fallback_strategy = [
-                "If bank refuses to accept zero-liability complaint: Send complaint via registered email to the Nodal Grievance Redressal Officer of the bank, and escalate to the RBI Banking Ombudsman (cms.rbi.org.in).",
-                "If SMS/call logs are deleted: Request call detail records (CDR) and SMS logs from the telecom service provider immediately."
-            ]
+        elif domain_def and domain_def.required_documents:
+            required_docs = list(domain_def.required_documents)
+            fallback_strategy = list(domain_def.evidentiary_fallback_strategy)
         else:
             required_docs = [
                 "Written agreement, purchase order, or correspondence establishing legal relationship",
                 "Bank statements / financial receipts establishing monetary transaction / loss",
-                "Formal statutory legal notice demanding performance / remedy"
+                "Formal statutory legal notice demanding performance / remedy",
             ]
             fallback_strategy = [
-                "If agreement is oral: Compile bank records, WhatsApp admissions, and email trails to substantiate oral contract under Section 10 of the Indian Contract Act, 1872."
+                "If agreement is oral: Compile bank records, WhatsApp admissions, and email trails to substantiate oral contract under Section 10 of the Indian Contract Act, 1872.",
             ]
 
         return {
