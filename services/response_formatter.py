@@ -37,8 +37,12 @@ def format_conversation_response(
 
         financial_info = case_state.get("financial") or {}
         amt = financial_info.get("amount_raw") if isinstance(financial_info, dict) else None
-        if not amt and isinstance(financial_info, dict) and financial_info.get("amount"):
-            amt = f"₹{financial_info['amount']:,.0f}"
+        if not amt and isinstance(financial_info, dict) and financial_info.get("amount") is not None:
+            raw_amt = financial_info["amount"]
+            if isinstance(raw_amt, (int, float)):
+                amt = f"₹{raw_amt:,.0f}"
+            else:
+                amt = str(raw_amt)
 
         compact_state = {
             "domain": case_state.get("case_domain") or case_state.get("subcategory") or case_state.get("primary_category"),

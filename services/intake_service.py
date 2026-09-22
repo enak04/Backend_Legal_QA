@@ -700,7 +700,9 @@ Respond ONLY with a valid JSON object matching this structure:
                 city_str = universal_state.jurisdiction.city or extracted_facts.get("city") or ""
                 loc_full = f"{city_str}, {jurisdiction_str}".strip(", ")
                 core_issue = universal_state.case_type or extracted_facts.get("core_issue") or (universal_state.issues[0].issue if universal_state.issues else "legal dispute")
-                dues_str = universal_state.financial.amount_raw or (f"₹{universal_state.financial.amount:,.0f}" if universal_state.financial.amount else universal_state.financial.dues_period) or ""
+                raw_amt = universal_state.financial.amount
+                formatted_amt = f"₹{raw_amt:,.0f}" if isinstance(raw_amt, (int, float)) else str(raw_amt or "")
+                dues_str = universal_state.financial.amount_raw or (formatted_amt if formatted_amt else universal_state.financial.dues_period) or ""
                 initial_statement = user_messages[0] if user_messages else ""
 
                 fact_bullets = [
