@@ -278,28 +278,60 @@ class MongoDBConversationRepository(ConversationRepository):
         self._files_col = self._db["files"]
 
     async def initialize(self) -> None:
-        await self._col.create_index("conversation_id", unique=True)
-        await self._files_col.create_index("file_id", unique=True)
+        import asyncio
+        for attempt in range(3):
+            try:
+                await self._col.create_index("conversation_id", unique=True)
+                await self._files_col.create_index("file_id", unique=True)
+                break
+            except Exception:
+                if attempt == 2:
+                    raise
+                await asyncio.sleep(0.5 * (attempt + 1))
 
     async def create(self, record: ConversationRecord) -> ConversationRecord:
+        import asyncio
         doc = record.model_dump()
-        await self._col.insert_one(doc)
+        for attempt in range(3):
+            try:
+                await self._col.insert_one(doc)
+                return record
+            except Exception:
+                if attempt == 2:
+                    raise
+                await asyncio.sleep(0.5 * (attempt + 1))
         return record
 
     async def get(self, conversation_id: str) -> ConversationRecord | None:
-        doc = await self._col.find_one({"conversation_id": conversation_id})
-        if doc is None:
-            return None
-        doc.pop("_id", None)
-        return ConversationRecord(**doc)
+        import asyncio
+        for attempt in range(3):
+            try:
+                doc = await self._col.find_one({"conversation_id": conversation_id})
+                if doc is None:
+                    return None
+                doc.pop("_id", None)
+                return ConversationRecord(**doc)
+            except Exception:
+                if attempt == 2:
+                    raise
+                await asyncio.sleep(0.5 * (attempt + 1))
+        return None
 
     async def update(self, record: ConversationRecord) -> ConversationRecord:
+        import asyncio
         record.updated_at = datetime.now(timezone.utc).isoformat()
         doc = record.model_dump()
-        await self._col.replace_one(
-            {"conversation_id": record.conversation_id},
-            doc
-        )
+        for attempt in range(3):
+            try:
+                await self._col.replace_one(
+                    {"conversation_id": record.conversation_id},
+                    doc
+                )
+                return record
+            except Exception:
+                if attempt == 2:
+                    raise
+                await asyncio.sleep(0.5 * (attempt + 1))
         return record
 
     async def delete(self, conversation_id: str) -> bool:

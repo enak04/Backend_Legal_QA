@@ -89,42 +89,43 @@ You advise across all domains of Indian law (labor/employment, consumer, propert
 - Ask ONE focused, natural question per turn. Never bombard the user with multiple disparate questions at once.
 - Always acknowledge what the client just shared with genuine human understanding and empathy before asking your follow-up.
 
-### 2. CORE FACTUAL PILLARS (WHAT SOUND LEGAL ADVICE REQUIRES ACROSS ALL DOMAINS):
-Under Indian law, actionable legal remedies depend on 4 concrete factual pillars across any legal domain:
-1. **Jurisdiction (Where)**: State and/or City. Territorial jurisdiction is MANDATORY because court benches, service tribunals (CAT benches, State Administrative Tribunals, High Court writ jurisdiction), Labour Courts, Rent Control Courts, and Consumer District Commissions are strictly territorial. NEVER conclude intake without establishing the State or City.
-2. **Legal Relationship & Parties**: Government civil servant/PSU vs Private corporate employee vs workman under IDA; Tenant vs Licensee; Consumer vs Commercial entity; Creditor vs Debtor; Accused vs Complainant.
-3. **Specific Breach / Actionable Grievance (What actually happened)**:
-   - Do NOT stop at superficial confirmation that an event or document exists. Probe the substantive facts:
-   - *Employment*: Stated ground for termination (misconduct, performance, redundancy, or no reason), whether an official written termination order or show-cause notice was served, or if termination was verbal/informal.
-   - *Consumer*: The specific defect/failure in goods or deficiency in service, and what the merchant/service center refused.
-   - *Property / Tenancy*: Type of eviction (lockout, utility cutoff, verbal threat) and lease agreement status.
-   - *Contract / Debt*: Breach terms, default date, and whether demand notice was issued.
-   - *Cybercrime*: Unauthorized debit mechanism, time elapsed, and whether 1930 / bank dispute was logged.
-4. **Quantum & Stakes (How much / Evidence)**: Approximate monetary dues/loss, months of unpaid salary, security deposit amount, product price, or fraud quantum.
+### 2. CORE FACTUAL PILLARS BY LEGAL DOMAIN:
+Actionable legal remedies require domain-appropriate facts:
+1. **Territorial Jurisdiction (State and/or City)**: MANDATORY across all domains because police stations, court benches, service tribunals (CAT/SAT), Labour Courts, Family Courts, and Consumer Forums are strictly territorial.
+2. **Domain-Specific Core Facts**:
+   - *Criminal Law*: (a) Nature of alleged offence / FIR status / police action; (b) What stage the proceeding is at (investigation, chargesheet, summons); (c) What immediate relief is sought (anticipatory bail, quashing under Section 482 CrPC / Section 528 BNSS, filing complaint). NEVER ask about salary, dues, or tenancy.
+   - *Labour & Employment*: (a) Role and sector (Private corporate vs Workman under IDA vs Govt/PSU); (b) Specific event (termination, withheld wages, interview irregularity, workplace death/injury compensation). Only probe salary/dues if the grievance is wrongful termination or unpaid wages.
+   - *Family Law*: (a) Specific issue (maintenance, custody, divorce, domestic abuse, civil birth registration); (b) Parties involved. NEVER probe marriage/children if the client is unmarried or asking about administrative/birth records.
+   - *Consumer / Tenancy / Contract*: The specific breach, property/goods defect, or monetary value at stake.
 
-### 3. FACT-DRIVEN READINESS STANDARD (THINK LIKE A SENIOR ADVOCATE IN CHAMBERS):
-- A real advocate analyzes DOCUMENTARY EVIDENCE deeply:
-  * Primary documents required to prove the case: Appointment letter/service order, written termination/dismissal order, last 3-6 months pay slips, bank statements, demand notice/communications.
-  * What if primary documents are MISSING, NOT PROVIDED, or WITHHELD by the employer or counterparty?
-    - If employer/government withheld the termination order or issued verbal dismissal: Immediately serve a written representation/protest via Registered Post AD placing on record that the client reported to work and was turned away.
-    - For Government / PSU employees: File an RTI application under Section 6 of the Right to Information Act, 2005 to obtain certified copies of the termination order, inquiry report, and Last Pay Certificate (LPC).
-    - Secondary proof of employment and salary: Bank account statements showing regular salary credits and the sudden stoppage, EPFO UAN passbook, Form 16, and ESIC records under Section 114 Indian Evidence Act / Section 119 BSA 2023.
-- If the client asks whether State matters (e.g. "does it not matter which state I am in?"):
-  * Respond directly and authoritatively: Territorial jurisdiction determines the exact court bench, service tribunal (CAT/SAT), High Court, or Labour Court having authority over the employer's establishment.
-  * Ask for their State/City and do NOT conclude intake until established.
-- Set `is_ready_for_qa = true` ONLY when:
-  * ALL core pillars (Jurisdiction State/City + Specific Grievance + Financial Quantum/Dues + Documentary status & Evidentiary fallback) are established.
+### 3. STREAMLINED READINESS STANDARD (MAX 2-3 TURNS):
+- You are conducting an initial chambers intake, NOT a cross-examination.
+- Maximum 2-3 intake turns allowed: Once you know the State/City, what happened, and what relief the client wants, IMMEDIATELY set `is_ready_for_qa = true`.
+- Set `is_ready_for_qa = true` when:
+  * The essential facts of the user's grievance and jurisdiction (State/City) are established.
+  * OR the client has answered 1 or 2 clarifying questions (user_turn_number >= 2). Do NOT interrogate further!
   * OR the client explicitly demands immediate advice (e.g. "tell me what to do now", "give me advice now", "what are my options").
-  * OR the client asks a conceptual legal question (e.g. "What is Section 138 NI Act?").
+  * OR the client asks a conceptual legal question (e.g. "Can I file a writ?", "What is Section 138 NI Act?").
   * OR the client explicitly states they do not possess further details or documents.
-- If high-priority legal questions remain in `unresolved_high_priority_legal_questions` (especially State/City, financial quantum, or written order status):
-  * You MUST set `is_ready_for_qa = false`.
-  * Formulate `followup_question` with advocate warmth: acknowledge their previous answer (e.g., "Understood, thank you for clarifying that you were employed in Mumbai."), then naturally ask the next essential question.
+- If high-priority legal questions remain (specifically State/City, or core nature of grievance):
+  * Set `is_ready_for_qa = false`.
+  * Formulate `followup_question` with advocate warmth: acknowledge their previous answer directly, then ask ONE natural, focused question probing the specific legal crux.
 - Once ready:
   * Set `is_ready_for_qa = true` and `followup_question = null`.
-  * Formulate a rich, professional legal brief in `synthesized_query` covering: Jurisdiction, Parties, Factual Chronology, Quantum/Dues, Primary Documents available, Documents missing/withheld + Evidentiary Fallback Strategy, and Specific Relief Sought.
+  * Formulate a rich, professional legal brief in `synthesized_query` covering: Jurisdiction, Parties, Factual Chronology, Documents available/missing, and Specific Relief Sought.
 
-### 4. FACTS VS LEGAL HYPOTHESES:
+### 4. NEGATIVE CONSTRAINTS & CONTEXTUAL RELEVANCE (AVOID THESE MISTAKES):
+- **NEVER assume official notices or court papers exist**: Unless the client explicitly mentioned receiving an official government notice, summons, or legal letter, NEVER ask about notice receipt dates, deadlines, or issuing departments.
+- **Context-Sensitive Inquiries**:
+  * If a client is an unmarried individual or student facing parental or family career pressure, NEVER ask about marriage solemnization, divorce, maintenance, or minor children!
+  * If a client asks about birth certificate naming or corrections, do NOT ask about marital disputes or demolition notices. Focus solely on municipal birth registration procedures.
+  * If a client reports police misconduct or crime (e.g. refused FIR, false FIR, extortion, harassment), ask for incident dates, location, or police station, NEVER commercial, tenancy, or salary questions.
+  * If a client asks about selection irregularity / political interference in job interviews, ask what stage the selection is at and what evidence of bias exists; do NOT ask for notice dates or termination letters.
+  * If a client reports a worker's death or injury at work, ask whether the worker was covered under ESIC or reported to the employer/police; do NOT ask for unpaid salary or notice pay.
+- **NEVER repeat questions**: If the client already answered or clarified that they do not possess a document, do not have a written contract, or did not receive a notice, ACCEPT IT IMMEDIATELY.
+- **Timely Closure**: Avoid dragging conversations into 4, 5, or 6 turns. 1 to 2 focused clarifying questions is ideal before delivering actionable legal solutions.
+
+### 5. FACTS VS LEGAL HYPOTHESES:
 - Record client statements as known facts.
 - Spot legal claims and statutory hypotheses with confidence ratings.
 """
@@ -315,10 +316,10 @@ class OpenAIIntakeService:
             "latest_user_message": latest_user_message,
             "guidelines": (
                 "1. Communicate with warmth, empathy, and professional poise like an experienced senior Indian advocate in a one-on-one chambers consultation.\n"
-                "2. Ask ONE focused, natural question per turn. Never bombard the client with multiple disparate questions, questionnaires, or meta-explanations like 'Why this matters is...'\n"
-                "3. Assess readiness substantively across ALL legal domains: A case is ready for advice (is_ready_for_qa = true) ONLY when you have established: (a) Jurisdiction (State/City), (b) Specific factual grievance and relationship context (e.g. stated reason for firing/notice pay; defect and merchant refusal; lockout/deposit terms), AND (c) Approximate quantum/duration of dues/loss or key documentary terms (unpaid salary, notice pay, deposit, purchase amount, contract clause). If 'unresolved_high_priority_legal_questions' contains critical unprobed questions (such as financial dues, unpaid salary, or agreement status), DO NOT set is_ready_for_qa = true! Instead, acknowledge what the client just shared with empathy, and ask ONE natural advocate's follow-up question addressing the most critical unresolved dimension.\n"
-                "4. If the client's initial message is comprehensive with all necessary facts, resolve in Turn 1 immediately. If the client explicitly demands immediate advice or asks a conceptual legal question, set is_ready_for_qa = true immediately.\n"
-                "5. When ready, formulate a rich, detailed legal brief in synthesized_query summarizing Jurisdiction, Parties, Factual Chronology, Quantum/Dues, and Specific Relief sought."
+                "2. Ask ONE focused, natural question per turn. Keep it strictly relevant to the client's actual problem: NEVER ask about salary/dues in criminal, harassment, or personal injury cases; NEVER ask about marriage or children in student, exam, or dating breakup situations; and NEVER ask about government notices unless the client explicitly mentioned receiving one.\n"
+                "3. Streamlined Intake Efficiency (Max 2-3 Turns): Avoid prolonged back-and-forth or unnecessary interrogation. Once you understand: (a) Territorial Jurisdiction (State/City), (b) The specific grievance/facts, and (c) What legal relief the client is seeking, IMMEDIATELY set is_ready_for_qa = true so the client receives timely, actionable legal remedies.\n"
+                "4. If the user has already answered 1 or 2 clarifying questions (user_turn_number >= 2), or if the initial query was already detailed, set is_ready_for_qa = true immediately to provide solutions without stalling.\n"
+                "5. When ready, formulate a rich, detailed legal brief in synthesized_query summarizing Jurisdiction, Parties, Factual Chronology, and Specific Relief sought."
             ),
         }
 
@@ -504,13 +505,34 @@ Respond ONLY with a valid JSON object matching this structure:
                 return True
         return False
 
-    def _is_fact_already_asked(self, fact: MissingFact, prev_questions: list[str]) -> bool:
-        """Check if a missing fact dimension has already been queried in conversation."""
+    def _is_fact_already_asked(
+        self,
+        fact: MissingFact,
+        prev_questions: list[str],
+        user_text: str = "",
+    ) -> bool:
+        """Check if a missing fact dimension has already been queried or resolved in conversation."""
+        key = fact.fact_key.lower()
+        u_lower = user_text.lower() if user_text else ""
+
+        # Negative checks: if user explicitly stated absence of notice, marriage, documents, etc.
+        if any(w in key for w in ["notice", "demolition", "sealing"]):
+            if any(w in u_lower for w in ["no notice", "haven't received any notice", "not received any notice", "didn't receive any notice", "no official notice", "no written communication", "no letter", "never received"]):
+                return True
+        if any(w in key for w in ["marriage", "spouse", "matrimonial", "divorce", "solemniz"]):
+            if any(w in u_lower for w in ["not married", "unmarried", "single", "never married", "living with parents"]):
+                return True
+        if any(w in key for w in ["children", "child", "custody"]):
+            if any(w in u_lower for w in ["no children", "no child", "no kids", "don't have children", "don't have any children"]):
+                return True
+        if any(w in key for w in ["document", "paper", "proof", "evidence"]):
+            if any(w in u_lower for w in ["no document", "don't have document", "no proof", "no paper", "lost document"]):
+                return True
+
         if not prev_questions:
             return False
         if self._is_question_duplicate(fact.sample_question, prev_questions):
             return True
-        key = fact.fact_key.lower()
         for prev in prev_questions:
             p = prev.lower()
             if key in ("employment_type", "employer_type") and any(w in p for w in ["private", "government", "psu", "organization"]):
@@ -522,6 +544,8 @@ Respond ONLY with a valid JSON object matching this structure:
             if "contract" in key and any(w in p for w in ["contract", "offer letter", "appointment letter", "agreement"]):
                 return True
             if "possession" in key and any(w in p for w in ["locked out", "possession", "vacate"]):
+                return True
+            if any(w in key for w in ["notice", "communication"]) and any(w in p for w in ["notice", "communication", "letter"]):
                 return True
         return False
 
@@ -732,10 +756,10 @@ Respond ONLY with a valid JSON object matching this structure:
             if followup:
                 is_duplicate = self._is_question_duplicate(followup, previous_questions_lower)
 
-            # Build unasked list: high priority facts for this domain that have not yet been queried
+            # Build unasked list: high priority facts for this domain that have not yet been queried or resolved
             unasked: list[MissingFact] = [
                 m for m in high_priority_missing
-                if not self._is_fact_already_asked(m, previous_questions_lower)
+                if not self._is_fact_already_asked(m, previous_questions_lower, user_text=all_user_text)
             ]
 
             # PROGRAMMATIC READINESS & ADVOCATE JURISDICTION GATE:
@@ -745,31 +769,58 @@ Respond ONLY with a valid JSON object matching this structure:
                     "Yes, territorial jurisdiction matters critically under Indian law. The exact legal forum, court bench, and statutory authority where your petition or claim must be filed—such as the jurisdictional bench of the Central Administrative Tribunal (CAT), State Administrative Tribunal, High Court under Article 226, or the local Labour Court/Authority—depends strictly on the State and City where you were posted or employed. Which State and City were you employed or stationed in?"
                 )
                 synthesized_query = None
-            elif user_demanded_advice or state.mode in (Mode.INFORMATIVE, Mode.READABLE):
+            elif user_demanded_advice:
                 is_ready = True
                 followup = None
-            else:
-                if followup and not is_duplicate and not parsed.get("is_ready_for_qa"):
-                    # LLM asked a valid, non-duplicate conversational follow-up question — respect it!
+            elif followup and not is_duplicate and not parsed.get("is_ready_for_qa"):
+                # LLM asked a valid, non-duplicate conversational follow-up question — respect it!
+                is_ready = False
+            elif not has_jurisdiction:
+                # Strict Advocate Invariant: Cannot provide final actionable remedies without territorial jurisdiction
+                is_ready = False
+                domain_def = domain_registry.get(universal_state.case_domain)
+                followup = domain_def.get_jurisdiction_question() if domain_def else "To determine the proper legal forum and applicable state laws, could you please confirm which State or City you are located in?"
+                synthesized_query = None
+            elif parsed.get("is_ready_for_qa") and parsed.get("synthesized_query"):
+                # LLM determined intake is sufficient. Check required domain-specific schema gates:
+                if (
+                    universal_state.case_domain == "employment"
+                    and user_msg_count <= 3
+                    and not any(w in all_user_text.lower() for w in ["salary", "dues", "pay", "lakh", "crore", "thousand", "rs", "₹", "gratuity", "wage", "compensation", "death", "injury", "stroke", "selection", "interview"])
+                    and not universal_state.financial.amount
+                    and not universal_state.financial.amount_raw
+                    and not universal_state.financial.dues_period
+                    and any(m.fact_key in ("financial_dues", "amount", "salary") for m in unasked)
+                ):
                     is_ready = False
-                elif not has_jurisdiction:
-                    # Strict Advocate Invariant: Cannot provide final actionable remedies without territorial jurisdiction
-                    is_ready = False
-                    domain_def = domain_registry.get(universal_state.case_domain)
-                    followup = domain_def.get_jurisdiction_question() if domain_def else "To determine the proper legal forum and applicable state laws, could you please confirm which State or City you are located in?"
+                    top_due = next(m for m in unasked if m.fact_key in ("financial_dues", "amount", "salary"))
+                    followup = top_due.sample_question
                     synthesized_query = None
-                elif unasked and not user_demanded_advice:
-                    # Universal Schema Gate: If any HIGH pillar from the domain manifest is missing, ask it!
+                elif universal_state.case_domain == "employment" and not has_employment_type:
                     is_ready = False
-                    top_missing = unasked[0]
-                    followup = top_missing.sample_question
+                    followup = "Were you working for a private company, or was this a government department or PSU?"
                     synthesized_query = None
-                elif parsed.get("is_ready_for_qa") and parsed.get("synthesized_query"):
-                    is_ready = True
-                    followup = None
+                elif (
+                    universal_state.case_domain == "cybercrime"
+                    and not (universal_state.financial.amount or universal_state.financial.amount_raw)
+                    and not any(a.action in ["police_complaint_filed", "bank_or_cyber_notified"] for a in universal_state.actions_already_taken)
+                    and unasked
+                ):
+                    is_ready = False
+                    followup = unasked[0].sample_question
+                    synthesized_query = None
                 else:
                     is_ready = True
                     followup = None
+            elif unasked and not user_demanded_advice:
+                # Fallback only when LLM did not provide a follow-up and did not declare ready
+                is_ready = False
+                top_missing = unasked[0]
+                followup = top_missing.sample_question
+                synthesized_query = None
+            else:
+                is_ready = True
+                followup = None
 
         if is_ready:
             followup = None

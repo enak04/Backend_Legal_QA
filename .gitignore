@@ -26,3 +26,14 @@ htmlcov/
 .idea/
 *.swp
 *.swo
+
+# Datasets
+Datasets/
+
+# Evaluation / Testing scripts and output (ignored for git upload)
+eval_results/
+run_conversation_eval.py
+auto_optimize_eval.py
+interactive_chat.py
+learned_*
+

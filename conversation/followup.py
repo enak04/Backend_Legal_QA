@@ -436,7 +436,7 @@ class FollowUpEngine:
             for q_def in domain_def.high_value_questions:
                 key = q_def["fact_key"]
                 # Check if already answered in state or user messages
-                if self._is_fact_known(case_state, key, user_messages_text=user_messages_text):
+                if self._is_fact_known(case_state, key, user_messages_text=user_messages_text, question_text=q_def.get("question", "")):
                     continue
 
                 missing.append(
@@ -472,6 +472,7 @@ class FollowUpEngine:
         state: UniversalCaseState,
         key: str,
         user_messages_text: str = "",
+        question_text: str = "",
     ) -> bool:
         """Check if a factual dimension is already established."""
         all_fact_parts = []
@@ -506,6 +507,8 @@ class FollowUpEngine:
                 party_parts.append(f"{k} {v}")
         party_text = " ".join(party_parts).lower()
         combined_text = f"{all_fact_text} {party_text} {state.summary or ''} {user_messages_text}".lower()
+
+        check_target = f"{key} {question_text}".lower()
 
         if "jurisdiction" in key or "state" in key:
             return bool(state.jurisdiction.state or state.jurisdiction.city) or bool(
@@ -554,6 +557,8 @@ class FollowUpEngine:
             ) or any(w in combined_text for w in ["fir", "police complaint", "cybercrime", "1930", "disputed with bank"])
 
         if "amount" in key or "paid" in key or "loss" in key or "value" in key or "due" in key or "salary" in key or "deposit" in key or "rent" in key:
+            if any(w in combined_text for w in ["dies", "death", "died", "stroke", "accident", "fatal", "compensation from esic", "interview", "selection", "polit"]):
+                return True
             return bool(state.financial.amount or state.financial.amount_raw or state.financial.dues_period) or bool(
                 re.search(
                     r"(?:rs\.?|₹|\blakh|\bcrore)\s*[\d,]+|(?:\b\d+\s*(?:month|day|week)s?\s*(?:salary|pay|wages|dues)|(?:salary|pay|wages|dues)\s*(?:for|of)?\s*\d+\s*(?:month|day|week)s?)|\bno dues\b|\bno pending\b|\bpaid in full\b|\bcleared\b|\bdeposit\b",
@@ -563,6 +568,24 @@ class FollowUpEngine:
 
         if "date" in key or "timing" in key or "hour" in key or "duration" in key:
             return bool(state.dates.incident_date or state.dates.notice_date)
+
+        if any(w in check_target for w in ["notice", "demolition", "sealing", "deadline", "coercive"]):
+            if "notice" not in user_messages_text.lower() and "order" not in user_messages_text.lower() and "demoli" not in user_messages_text.lower() and "seal" not in user_messages_text.lower():
+                return True
+            if any(w in combined_text for w in ["no notice", "haven't received any notice", "not received any notice", "didn't receive any notice", "no official notice", "no written communication", "no letter", "never received", "without notice", "regularization", "interview", "appointment"]):
+                return True
+
+        if any(w in check_target for w in ["marriage", "spouse", "matrimonial", "solemniz", "husband", "wife"]):
+            if any(w in user_messages_text.lower() for w in ["exam", "student", "career", "police", "fir", "birth certificate", "name"]):
+                return True
+            if any(w in combined_text for w in ["not married", "unmarried", "single", "never married", "living with parents", "exam", "preparing for"]):
+                return True
+
+        if any(w in check_target for w in ["children", "child", "minor", "custody"]):
+            if any(w in user_messages_text.lower() for w in ["exam", "student", "career", "police", "fir", "birth certificate"]):
+                return True
+            if any(w in combined_text for w in ["no children", "no child", "no kids", "don't have children", "don't have any children", "single girl child", "not married", "unmarried"]):
+                return True
 
         if isinstance(state.domain_extensions, dict):
             for ext_val in state.domain_extensions.values():

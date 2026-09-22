@@ -181,8 +181,17 @@ class ConversationManager:
                 question=constructed_question,
                 mode=state.mode.value,
             )
-        except (LegalQATimeoutError, LegalQAUnavailableError):
-            raise
+        except (LegalQATimeoutError, LegalQAUnavailableError) as exc:
+            if state.mode == Mode.ACTIONABLE and self._answer_generator.is_configured:
+                logger.warning("Legal_QA service call unavailable (%s); falling back to grounded statutory answer generator.", exc)
+                qa_response = {
+                    "question": constructed_question,
+                    "answer": "",
+                    "reasoning_chain": [],
+                    "retrieved_cases": [],
+                }
+            else:
+                raise
         except Exception as exc:
             logger.warning("Legal_QA service call skipped or failed (%s); using grounded statutory synthesis.", exc)
 
