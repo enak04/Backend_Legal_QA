@@ -202,15 +202,15 @@ class ConversationManager:
         )
         all_authorities = statutory_authorities + precedent_authorities
 
-        # 8. Use Legal_QA backend answer directly (or generate grounded fallback if empty)
+        # 8. Use Legal_QA backend answer directly as-is (or generate fallback if empty)
         legal_assessment = self._answer_generator.build_assessment(
             case_state=case_state,
             authorities=all_authorities,
         )
         if qa_response.get("answer"):
-            raw_direct = self._format_direct_answer(qa_response["answer"])
+            direct_answer = qa_response["answer"]
         elif intake_result.direct_legal_answer:
-            raw_direct = self._format_direct_answer(intake_result.direct_legal_answer)
+            direct_answer = intake_result.direct_legal_answer
         else:
             raw_direct, gen_assessment = await self._answer_generator.generate_answer(
                 case_state=case_state,
@@ -219,13 +219,7 @@ class ConversationManager:
             )
             if gen_assessment:
                 legal_assessment = gen_assessment
-            raw_direct = self._format_direct_answer(raw_direct)
-
-        direct_answer = self._enrich_answer_with_advocate_evidence(
-            raw_direct,
-            case_state=case_state,
-            evidence_assessment=legal_assessment.evidence_assessment,
-        )
+            direct_answer = raw_direct
 
         # 9. Persist result and structured assessment
         result = LegalQAResult(
