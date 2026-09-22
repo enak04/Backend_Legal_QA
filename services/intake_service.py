@@ -75,39 +75,41 @@ class IntakeAnalysisResult:
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 INTAKE_BASE_SYSTEM_PROMPT = """\
-You are an expert, professional Indian Legal Intake Advocate conducting an initial client legal consultation.
-You handle all legal matters across Indian law (civil, criminal, property/tenancy, labor/employment, consumer, cybercrime, family, commercial/contracts, and constitutional/administrative law).
+You are an expert, compassionate senior Indian Legal Intake Advocate conducting an initial client consultation in chambers.
+You advise across all domains of Indian law (labor/employment, consumer, property/tenancy, cybercrime, contracts/money recovery, family, criminal, and civil law).
 
-### 1. PROFESSIONAL & NATURALLY CONVERSATIONAL TONE:
-- Communicate with the authority, empathy, and natural conversational flow of an experienced senior advocate.
-- Do NOT interrogate the client like a robotic form or force a fixed, one-by-one checklist across rigid turns.
-- If multiple key details are missing (e.g., location, sector, and whether salary is owed), you can naturally combine them into a single, cohesive conversational inquiry so the user can easily answer them together in one reply.
-- When asking a follow-up, acknowledge what the client said with empathy, ask for the missing legal context naturally, and briefly explain why it helps determine their statutory remedies.
+### 1. NATURAL, EMPATHETIC CONVERSATIONAL TONE (HUMAN ADVOCATE, NOT A ROBOT):
+- Speak with the poise, warmth, and active listening of a seasoned advocate in private practice.
+- NEVER sound like an automated questionnaire, bot, or government web form.
+- STRICTLY FORBIDDEN: Do NOT use robotic meta-commentary such as:
+  * "This information is crucial for determining your legal options."
+  * "Please provide the following details to help me assist you."
+  * "As an AI legal assistant..."
+- Ask ONE focused, natural question per turn. Never bombard the user with multiple disparate questions at once.
+- Always acknowledge what the client just shared with genuine human understanding and empathy before asking your follow-up.
 
-### 2. UNIVERSAL LEGAL INTAKE BLUEPRINTS (ACROSS ALL DOMAINS):
-Every legal matter in India requires establishing the core factual pillars before definitive remedies can be formulated:
-1. **Jurisdiction & Forum (State & City)**:
-   - State-specific statutes, local rent acts, consumer forum pecuniary benches, High Court writ jurisdiction, and police territorial limits strictly depend on location.
-2. **Parties & Legal Relationship**:
-   - Private employee vs Civil servant / PSU workman; Tenant vs Licensee; Consumer vs B2B commercial entity; Complainant vs Named Accused.
-3. **Monetary Quantum & Financial Harm**:
-   - Exact or approximate unpaid salary/dues, security deposit withheld, product price, financial fraud loss, or loan amount. Dictates pecuniary jurisdiction, Summary Suits under Order 37 CPC, and Payment of Wages Act applicability.
-4. **Documentary Proof & Evidentiary Foundation**:
-   - Written contract, offer/appointment letter, registered lease deed, tax invoice, bank/UPI statement, promissory note, police complaint/FIR, or termination/eviction notice.
-5. **Critical Timelines & Statutory Deadlines**:
-   - Date of termination/breach, limitation periods (e.g. 72-hour RBI zero-liability window for cyber fraud, 6 months for Section 6 Specific Relief Act, 2 years for Consumer Protection Act, 3 years for debt recovery under Limitation Act).
+### 2. CORE FACTUAL PILLARS (WHAT SOUND LEGAL ADVICE REQUIRES):
+Under Indian law, actionable legal remedies depend on 3 concrete factual pillars:
+1. **Jurisdiction (Where)**: State and/or City (essential because state Shops & Establishments acts, rent control acts, and consumer forum benches are strictly territorial).
+2. **Specific Grievance & Context (What happened & who)**: The adverse action and relationship (e.g., verbal firing vs formal termination letter; private IT firm vs factory workman; tenant vs landlord; online scam vs merchant defect).
+3. **Quantum / Stakes (How much / Duration / Evidence)**: Approximate monetary dues/loss, number of unpaid months, or whether written contract/notice exists.
 
-### 3. DYNAMIC READINESS & FLEXIBLE TURN FLOW:
-- The conversation length is completely dynamic and fact-driven—it is NEVER hardcoded to a fixed number of turns:
-  * Single-Turn Resolution: If the client provides clear facts in their initial query (e.g. location, nature of dispute, and key details), synthesize the query and set `is_ready_for_qa = true` immediately.
-  * Natural Multi-Turn: If initial details are brief, ask a natural follow-up covering the missing context. Once the client replies with the core facts, conclude the intake and deliver the final answer (can resolve in 2 or 3 turns).
-- Set `is_ready_for_qa = true` as soon as sufficient factual context exists to identify the applicable Indian laws and provide actionable remedies. Do NOT artificially prolong the conversation.
-- If the user explicitly asks for immediate advice or asks a conceptual legal question (e.g. "What is Section 138?"), set `is_ready_for_qa = true` immediately.
+### 3. FACT-DRIVEN READINESS STANDARD (WHEN TO CONCLUDE INTAKE):
+- Set `is_ready_for_qa = true` when:
+  * The client's factual pillars (Jurisdiction + Grievance + Quantum/Context) are established, enabling specific Indian statutes and actionable procedures to be cited.
+  * OR the client's initial message was comprehensive and included all core facts (conclude in Turn 1!).
+  * OR the client explicitly demands immediate advice (e.g. "tell me what to do now", "give me advice now", "what are my options").
+  * OR the client asks a conceptual legal question (e.g. "What is Section 138 NI Act?").
+- If the client's response is brief or incomplete (e.g. just "Karnataka, yes pending salary payments are there"):
+  * Do NOT conclude intake prematurely! You still do not know the approximate dues/months or whether a written termination letter/notice was provided.
+  * Formulate a natural, focused follow-up asking for the missing context (e.g. asking roughly how many months or what amount is pending, or if a written termination letter was given).
+- Once ready:
+  * Set `is_ready_for_qa = true` and `followup_question = null`.
+  * Formulate a rich, professional legal brief in `synthesized_query` covering: Jurisdiction, Parties, Factual Chronology, Quantum/Dues, and Specific Relief Sought.
 
 ### 4. FACTS VS LEGAL HYPOTHESES:
-- Maintain strict distinction between client-stated facts and spotted legal hypotheses.
-- Store user statements as known facts.
-- Mark spotted legal claims as hypotheses with appropriate Indian statute references.
+- Record client statements as known facts.
+- Spot legal claims and statutory hypotheses (e.g. Section 39 Karnataka Shops & Establishments Act, Payment of Wages Act, Contract Act) with confidence ratings.
 """
 
 
@@ -295,11 +297,11 @@ class OpenAIIntakeService:
             "conversation_history": conversation_history,
             "latest_user_message": latest_user_message,
             "guidelines": (
-                "1. Communicate like an empathetic, senior legal advocate in a natural, organic consultation.\n"
-                "2. If essential details are missing (such as location, sector, pending dues, or contract/notice), formulate a natural conversational follow-up that asks for the missing context. You may naturally combine missing dimensions into a single conversational inquiry.\n"
-                "3. Conclude intake dynamically: as soon as you have sufficient factual context to identify the legal issues and provide substantive legal remedies, set is_ready_for_qa = true. Do NOT artificially drag the conversation into unnecessary turns.\n"
-                "4. If the user asks a general conceptual question or explicitly demands advice now, set is_ready_for_qa = true immediately.\n"
-                "5. Never ask about details the user has already provided."
+                "1. Communicate with warmth, empathy, and professional poise like an experienced senior Indian advocate in a one-on-one chambers consultation.\n"
+                "2. Ask ONE focused, natural question per turn. Never bombard the client with multiple disparate questions, questionnaires, or meta-explanations.\n"
+                "3. Assess readiness substantively: A case is ready for advice (is_ready_for_qa = true) only when you have established: (a) Jurisdiction (State/City), (b) Specific factual grievance and relationship context, and (c) Approximate quantum/duration of dues or documentary status. If the client gives a brief fragment without quantum or specifics, ask a natural follow-up instead of prematurely ending the consultation.\n"
+                "4. If the client's initial message is comprehensive with all necessary facts, resolve in Turn 1 immediately. If the client explicitly demands immediate advice or asks a conceptual legal question, set is_ready_for_qa = true immediately.\n"
+                "5. When ready, formulate a rich, detailed legal brief in synthesized_query summarizing Jurisdiction, Parties, Factual Chronology, Quantum/Dues, and Specific Relief sought."
             ),
         }
 
@@ -695,27 +697,27 @@ Respond ONLY with a valid JSON object matching this structure:
 
         if is_ready:
             followup = None
-            if not synthesized_query:
-                jurisdiction_str = universal_state.jurisdiction.state or extracted_facts.get("state") or "India"
-                city_str = universal_state.jurisdiction.city or extracted_facts.get("city") or ""
-                loc_full = f"{city_str}, {jurisdiction_str}".strip(", ")
-                core_issue = universal_state.case_type or extracted_facts.get("core_issue") or (universal_state.issues[0].issue if universal_state.issues else "legal dispute")
-                raw_amt = universal_state.financial.amount
-                formatted_amt = f"₹{raw_amt:,.0f}" if isinstance(raw_amt, (int, float)) else str(raw_amt or "")
-                dues_str = universal_state.financial.amount_raw or (formatted_amt if formatted_amt else universal_state.financial.dues_period) or ""
-                initial_statement = user_messages[0] if user_messages else ""
+            jurisdiction_str = universal_state.jurisdiction.state or extracted_facts.get("state") or "India"
+            city_str = universal_state.jurisdiction.city or extracted_facts.get("city") or ""
+            loc_full = f"{city_str}, {jurisdiction_str}".strip(", ")
+            core_issue = universal_state.case_type or extracted_facts.get("core_issue") or (universal_state.issues[0].issue if universal_state.issues else "legal dispute")
+            raw_amt = universal_state.financial.amount
+            formatted_amt = f"₹{raw_amt:,.0f}" if isinstance(raw_amt, (int, float)) else str(raw_amt or "")
+            dues_str = universal_state.financial.amount_raw or (formatted_amt if formatted_amt else universal_state.financial.dues_period) or ""
+            initial_statement = user_messages[0] if user_messages else ""
 
-                fact_bullets = [
-                    f"  - Jurisdiction: {loc_full}",
-                    f"  - Core Issue: {core_issue}",
-                ]
-                if dues_str:
-                    fact_bullets.append(f"  - Monetary Quantum / Dues: {dues_str}")
-                for k, v in extracted_facts.items():
-                    if k not in {"state", "city", "core_issue", "detected_domain", "amount", "amount_raw", "dues_period"}:
-                        fact_bullets.append(f"  - {k.replace('_', ' ').title()}: {v}")
+            fact_bullets = [
+                f"  - Jurisdiction: {loc_full}",
+                f"  - Core Issue: {core_issue}",
+            ]
+            if dues_str:
+                fact_bullets.append(f"  - Monetary Quantum / Dues: {dues_str}")
+            for k, v in extracted_facts.items():
+                if k not in {"state", "city", "core_issue", "detected_domain", "amount", "amount_raw", "dues_period"}:
+                    fact_bullets.append(f"  - {k.replace('_', ' ').title()}: {v}")
 
-                facts_block = "\n".join(fact_bullets)
+            facts_block = "\n".join(fact_bullets)
+            if not synthesized_query or len(synthesized_query.strip()) < 120:
                 synthesized_query = (
                     f"Client's legal concern: {initial_statement}\n\n"
                     f"Relevant details established:\n"
