@@ -4,6 +4,8 @@ Legal Research and Retrieval Layer.
 Separates conversation handling from legal authority retrieval and research.
 Prioritizes authoritative Indian statutes, current provisions, and relevant rules.
 Treats past cases/precedents as persuasive context ONLY, never as user facts.
+Enforces strict domain isolation so statutes from different legal domains
+(e.g., Rent Control vs Employment) are never cross-polluted.
 """
 
 from __future__ import annotations
@@ -24,6 +26,7 @@ STATUTORY_CATALOG: list[dict[str, Any]] = [
     {
         "source": "Payment of Wages Act, 1936",
         "authority_type": "statute",
+        "domain": "employment",
         "jurisdiction": "Central / India",
         "provision": "Section 5 & Section 15",
         "status": "current",
@@ -34,6 +37,7 @@ STATUTORY_CATALOG: list[dict[str, Any]] = [
     {
         "source": "Industrial Disputes Act, 1947",
         "authority_type": "statute",
+        "domain": "employment",
         "jurisdiction": "Central / India",
         "provision": "Section 25F",
         "status": "current",
@@ -42,8 +46,20 @@ STATUTORY_CATALOG: list[dict[str, Any]] = [
         "key_excerpt": "No workman employed in any industry who has been in continuous service for not less than one year under an employer shall be retrenched by that employer until the workman has been given one month's notice in writing or has been paid wages in lieu of notice.",
     },
     {
+        "source": "Maharashtra Shops and Establishments (Regulation of Employment and Conditions of Service) Act, 2017",
+        "authority_type": "statute",
+        "domain": "employment",
+        "jurisdiction": "Maharashtra",
+        "provision": "Section 13 & Section 14",
+        "status": "current",
+        "relevance": "Governs service conditions, discharge/dismissal, and mandatory notice period or wages in lieu thereof for employees in commercial establishments in Maharashtra.",
+        "applicability_conditions": ["employed in Maharashtra", "commercial establishment / IT / private firm", "completed continuous service"],
+        "key_excerpt": "No employee who has been in continuous employment shall be discharged or dismissed without at least thirty days' notice in writing or wages in lieu of notice, except for misconduct.",
+    },
+    {
         "source": "Karnataka Shops and Commercial Establishments Act, 1961",
         "authority_type": "statute",
+        "domain": "employment",
         "jurisdiction": "Karnataka",
         "provision": "Section 39",
         "status": "current",
@@ -52,8 +68,20 @@ STATUTORY_CATALOG: list[dict[str, Any]] = [
         "key_excerpt": "No employer shall dispense with the services of an employee employed continuously for a period of not less than six months, except for a reasonable cause and without giving such employee at least one month's notice or wages in lieu of such notice.",
     },
     {
+        "source": "Delhi Shops and Establishments Act, 1954",
+        "authority_type": "statute",
+        "domain": "employment",
+        "jurisdiction": "Delhi",
+        "provision": "Section 30",
+        "status": "current",
+        "relevance": "Notice of termination of employment: no employer shall dispense with the services of an employee who has been in continuous employment for not less than three months without giving at least one month's notice in writing or wages in lieu thereof.",
+        "applicability_conditions": ["employed in Delhi", "commercial establishment / shop / private firm", "completed 3 months service"],
+        "key_excerpt": "No employer shall dispense with the services of an employee who has been in his continuous employment for not less than three months, without giving such person at least one month's notice in writing or wages in lieu thereof.",
+    },
+    {
         "source": "Payment of Gratuity Act, 1972",
         "authority_type": "statute",
+        "domain": "employment",
         "jurisdiction": "Central / India",
         "provision": "Section 4",
         "status": "current",
@@ -66,6 +94,7 @@ STATUTORY_CATALOG: list[dict[str, Any]] = [
     {
         "source": "Consumer Protection Act, 2019",
         "authority_type": "statute",
+        "domain": "consumer",
         "jurisdiction": "Central / India",
         "provision": "Section 2(7) & Section 35",
         "status": "current",
@@ -76,6 +105,7 @@ STATUTORY_CATALOG: list[dict[str, Any]] = [
     {
         "source": "Consumer Protection Act, 2019",
         "authority_type": "statute",
+        "domain": "consumer",
         "jurisdiction": "Central / India",
         "provision": "Section 69",
         "status": "current",
@@ -86,6 +116,7 @@ STATUTORY_CATALOG: list[dict[str, Any]] = [
     {
         "source": "Consumer Protection (E-Commerce) Rules, 2020",
         "authority_type": "rule",
+        "domain": "consumer",
         "jurisdiction": "Central / India",
         "provision": "Rule 5 & Rule 6",
         "status": "current",
@@ -98,6 +129,7 @@ STATUTORY_CATALOG: list[dict[str, Any]] = [
     {
         "source": "Specific Relief Act, 1963",
         "authority_type": "statute",
+        "domain": "property",
         "jurisdiction": "Central / India",
         "provision": "Section 6",
         "status": "current",
@@ -108,6 +140,7 @@ STATUTORY_CATALOG: list[dict[str, Any]] = [
     {
         "source": "Transfer of Property Act, 1882",
         "authority_type": "statute",
+        "domain": "property",
         "jurisdiction": "Central / India",
         "provision": "Section 108 & Section 106",
         "status": "current",
@@ -118,6 +151,7 @@ STATUTORY_CATALOG: list[dict[str, Any]] = [
     {
         "source": "Maharashtra Rent Control Act, 1999",
         "authority_type": "statute",
+        "domain": "property",
         "jurisdiction": "Maharashtra",
         "provision": "Section 24 & Section 29",
         "status": "current",
@@ -130,6 +164,7 @@ STATUTORY_CATALOG: list[dict[str, Any]] = [
     {
         "source": "Bharatiya Nyaya Sanhita, 2023",
         "authority_type": "statute",
+        "domain": "criminal",
         "jurisdiction": "Central / India",
         "provision": "Section 115 (Voluntarily Causing Hurt) & Section 351 (Criminal Intimidation)",
         "status": "current",
@@ -140,6 +175,7 @@ STATUTORY_CATALOG: list[dict[str, Any]] = [
     {
         "source": "Bharatiya Nagarik Suraksha Sanhita, 2023",
         "authority_type": "statute",
+        "domain": "criminal",
         "jurisdiction": "Central / India",
         "provision": "Section 173 (Information in Cognizable Cases - FIR)",
         "status": "current",
@@ -150,6 +186,7 @@ STATUTORY_CATALOG: list[dict[str, Any]] = [
     {
         "source": "Bharatiya Nagarik Suraksha Sanhita, 2023",
         "authority_type": "statute",
+        "domain": "criminal",
         "jurisdiction": "Central / India",
         "provision": "Section 175(3) & Section 223",
         "status": "current",
@@ -162,6 +199,7 @@ STATUTORY_CATALOG: list[dict[str, Any]] = [
     {
         "source": "RBI Master Direction - Customer Protection – Limiting Liability in Unauthorized Electronic Banking Transactions, 2017",
         "authority_type": "rule",
+        "domain": "cybercrime",
         "jurisdiction": "Central / India",
         "provision": "Paragraph 6 - Zero Liability of a Customer",
         "status": "current",
@@ -172,6 +210,7 @@ STATUTORY_CATALOG: list[dict[str, Any]] = [
     {
         "source": "Information Technology Act, 2000",
         "authority_type": "statute",
+        "domain": "cybercrime",
         "jurisdiction": "Central / India",
         "provision": "Section 43 & Section 66D",
         "status": "current",
@@ -184,6 +223,7 @@ STATUTORY_CATALOG: list[dict[str, Any]] = [
     {
         "source": "Bharatiya Nagarik Suraksha Sanhita, 2023",
         "authority_type": "statute",
+        "domain": "family",
         "jurisdiction": "Central / India",
         "provision": "Section 144 (formerly Section 125 CrPC)",
         "status": "current",
@@ -194,6 +234,7 @@ STATUTORY_CATALOG: list[dict[str, Any]] = [
     {
         "source": "Protection of Women from Domestic Violence Act, 2005",
         "authority_type": "statute",
+        "domain": "family",
         "jurisdiction": "Central / India",
         "provision": "Section 12, Section 19 (Residence Order), Section 20 (Monetary Relief)",
         "status": "current",
@@ -206,6 +247,7 @@ STATUTORY_CATALOG: list[dict[str, Any]] = [
     {
         "source": "Indian Contract Act, 1872",
         "authority_type": "statute",
+        "domain": "contract",
         "jurisdiction": "Central / India",
         "provision": "Section 73",
         "status": "current",
@@ -216,6 +258,7 @@ STATUTORY_CATALOG: list[dict[str, Any]] = [
     {
         "source": "Limitation Act, 1963",
         "authority_type": "statute",
+        "domain": "contract",
         "jurisdiction": "Central / India",
         "provision": "Schedule, Article 18 & Article 55",
         "status": "current",
@@ -226,6 +269,7 @@ STATUTORY_CATALOG: list[dict[str, Any]] = [
     {
         "source": "Negotiable Instruments Act, 1881",
         "authority_type": "statute",
+        "domain": "contract",
         "jurisdiction": "Central / India",
         "provision": "Section 138",
         "status": "current",
@@ -238,6 +282,7 @@ STATUTORY_CATALOG: list[dict[str, Any]] = [
     {
         "source": "Constitution of India",
         "authority_type": "statute",
+        "domain": "government",
         "jurisdiction": "Central / India",
         "provision": "Article 226",
         "status": "current",
@@ -248,6 +293,7 @@ STATUTORY_CATALOG: list[dict[str, Any]] = [
     {
         "source": "Right to Information Act, 2005",
         "authority_type": "statute",
+        "domain": "government",
         "jurisdiction": "Central / India",
         "provision": "Section 6 & Section 19",
         "status": "current",
@@ -275,40 +321,70 @@ class LegalResearchLayer:
         """
         Identify applicable statutory provisions based on the CaseState.
         Takes into account jurisdiction, domain, active issues, and parties.
+        Enforces strict domain isolation (e.g. Rent Control cannot appear in employment disputes).
         """
-        domain = (case_state.case_domain or case_state.primary_category or "").lower()
+        raw_domain = (case_state.case_domain or case_state.primary_category or "").lower()
         state = (case_state.jurisdiction.state or "").lower()
+        city = (case_state.jurisdiction.city or "").lower()
         active_issue_texts = [i.issue.lower() for i in case_state.issues if i.status != "ruled_out"]
-        all_text = f"{domain} {' '.join(active_issue_texts)} {state} {case_state.user_goal or ''}".lower()
+        all_text = f"{raw_domain} {' '.join(active_issue_texts)} {state} {city} {case_state.user_goal or ''}".lower()
+
+        # Canonical domain normalization
+        target_domain = None
+        if any(w in raw_domain for w in ["employ", "wage", "salary", "labor", "labour"]):
+            target_domain = "employment"
+        elif any(w in raw_domain for w in ["tenant", "evict", "landlord", "rent", "property"]):
+            target_domain = "property"
+        elif any(w in raw_domain for w in ["cyber", "scam", "fraud"]):
+            target_domain = "cybercrime"
+        elif "consumer" in raw_domain:
+            target_domain = "consumer"
+        elif any(w in raw_domain for w in ["crime", "crim"]):
+            target_domain = "criminal"
+        elif any(w in raw_domain for w in ["divorce", "matrimon", "custody", "family"]):
+            target_domain = "family"
+        elif any(w in raw_domain for w in ["contract", "debt", "loan", "money"]):
+            target_domain = "contract"
+        elif any(w in raw_domain for w in ["govt", "government", "admin", "rti"]):
+            target_domain = "government"
 
         scored: list[tuple[float, dict[str, Any]]] = []
 
         for item in self._catalog:
+            item_domain = item.get("domain", "").lower()
+
+            # STRICT DOMAIN ISOLATION:
+            # An authority belonging to a different domain must NEVER be cited.
+            # e.g., Rent Control Act must NEVER be cited in an Employment dispute.
+            if target_domain and item_domain and item_domain != target_domain:
+                continue
+
             score = 0.0
             item_source = item["source"].lower()
             item_jur = item["jurisdiction"].lower()
             item_relevance = item["relevance"].lower()
             item_excerpt = item["key_excerpt"].lower()
 
-            # Jurisdiction affinity: State-specific matches get high priority
+            # State-specific matching
             if item_jur != "central / india":
-                if item_jur in state or item_jur in all_text:
-                    score += 5.0
+                if (state and item_jur in state) or (city and item_jur in city) or item_jur in all_text:
+                    score += 10.0  # Perfect local statute match (e.g. Maharashtra Shops Act for Mumbai)
                 elif state and item_jur not in state:
-                    # Specific to another state (e.g. Maharashtra law for Karnataka dispute)
-                    score -= 5.0
+                    # Specific to another state (e.g. Karnataka law for Maharashtra dispute)
+                    score -= 10.0
+            else:
+                score += 2.0  # Central statutes applicable pan-India
 
-            # Domain affinity
-            if domain:
-                if domain in item_relevance or domain in item_source:
-                    score += 4.0
+            # Domain affinity bonus
+            if target_domain and item_domain == target_domain:
+                score += 5.0
 
             # Issue keyword matching
             for issue in active_issue_texts:
                 for word in issue.split():
                     if len(word) > 3:
-                        if word in item_relevance or word in item_excerpt:
-                            score += 1.5
+                        if word in item_relevance or word in item_excerpt or word in item_source:
+                            score += 2.0
 
             if score > 0:
                 scored.append((score, item))

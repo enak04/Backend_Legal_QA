@@ -225,12 +225,6 @@ class DomainRegistry:
                         "question": "In which State or City were you employed?",
                     },
                     {
-                        "fact_key": "employment_type",
-                        "importance": "HIGH",
-                        "reason": "Determines applicable statutory regime (Shops & Establishments Act vs Industrial Disputes Act vs Civil Court)",
-                        "question": "Was this a private company/firm, or a government/PSU organization?",
-                    },
-                    {
                         "fact_key": "financial_dues",
                         "importance": "HIGH",
                         "reason": "Determines statutory wage claims under Payment of Wages Act or Section 33C Industrial Disputes Act",
@@ -241,6 +235,12 @@ class DomainRegistry:
                         "importance": "HIGH",
                         "reason": "Dictates contractual notice terms and binding dispute resolution clauses",
                         "question": "Do you have a written employment contract, offer letter, or appointment letter?",
+                    },
+                    {
+                        "fact_key": "employment_type",
+                        "importance": "HIGH",
+                        "reason": "Determines applicable statutory regime (Shops & Establishments Act vs Industrial Disputes Act vs Civil Court)",
+                        "question": "Was this a private company/firm, or a government/PSU organization?",
                     },
                     {
                         "fact_key": "termination_notice_given",

@@ -232,3 +232,64 @@ class TestConversationManagerWithOpenAI:
             assert final_state.stage == ConversationStage.ANSWERED
             assert final_state.facts.get("employment_type") == "private"
             assert len(final_state.messages) == 4  # user, assistant, user, assistant
+
+    @pytest.mark.asyncio
+    async def test_turn3_brief_location_does_not_prematurely_close_without_financial_dues(
+        self, mock_openai_response, tmp_path
+    ):
+        """
+        Verify that a single-word location response on Turn 3 (e.g. 'Mumbei')
+        does NOT trigger premature closure when critical facts like financial dues remain unasked.
+        """
+        service = OpenAIIntakeService(api_key="sk-test-key")
+        state = ConversationRecord(mode=Mode.ACTIONABLE)
+
+        add_user_message(state, "I was fired from my job")
+        state.messages.append(type("Msg", (), {"role": MessageRole.ASSISTANT, "content": "What reason was given for your termination?"})())
+        add_user_message(state, "It says due to performance issues but my manager always appreciated my work")
+        state.messages.append(type("Msg", (), {"role": MessageRole.ASSISTANT, "content": "Which state or city were you employed in?"})())
+        add_user_message(state, "Mumbei")
+
+        # Mock OpenAI eagerly attempting premature closure on turn 3
+        openai_turn3 = {
+            "case": {"domain": "employment"},
+            "jurisdiction": {"state": "Maharashtra", "city": "Mumbai"},
+            "is_ready_for_qa": True,
+            "followup_question": None,
+            "synthesized_query": "The client was terminated in Mumbai...",
+        }
+
+        with patch.object(
+            service._client.chat.completions,
+            "create",
+            new_callable=AsyncMock,
+            return_value=mock_openai_response(openai_turn3),
+        ):
+            res = await service.analyze_turn(state, "Mumbei")
+            assert not res.is_ready_for_qa, "Should NOT close intake on Turn 3 with unasked financial dues!"
+            assert res.followup_question is not None
+            assert any(w in res.followup_question.lower() for w in ["dues", "salary", "pay", "gratuity", "amount"])
+
+    def test_statutory_catalog_domain_isolation(self):
+        """
+        Verify that research_authorities strictly isolates domains so that
+        Maharashtra Rent Control Act NEVER contaminates an employment dispute in Mumbai,
+        and Maharashtra Shops and Establishments Act 2017 is correctly retrieved.
+        """
+        from conversation.cases.models import Jurisdiction, LegalIssue, UniversalCaseState
+        from legal_qa.research import legal_research_layer
+
+        ucs = UniversalCaseState(
+            case_domain="employment",
+            jurisdiction=Jurisdiction(country="India", state="Maharashtra", city="Mumbai"),
+            issues=[LegalIssue(issue="wrongful termination", domain="employment", status="confirmed")],
+        )
+
+        auths = legal_research_layer.research_authorities(ucs)
+        sources = [a.source for a in auths]
+
+        # Rent Control must NEVER be retrieved for an employment dispute
+        assert not any("Rent Control" in s for s in sources), "Cross-domain pollution: Rent Control in employment!"
+        # Maharashtra Shops and Establishments Act must be retrieved for Maharashtra
+        assert any("Maharashtra Shops" in s for s in sources), "State-specific employment act not retrieved!"
+

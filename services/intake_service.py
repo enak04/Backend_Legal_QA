@@ -104,14 +104,21 @@ Under Indian law, actionable legal remedies depend on 4 concrete factual pillars
 
 ### 3. FACT-DRIVEN READINESS STANDARD (DO NOT BE SOFT ON FACT GATHERING):
 - Merely knowing that a contract, invoice, police report, or termination letter exists is NOT sufficient to advise on legal remedies. You must know what that document says, what ground was given, or what quantum is involved.
-- Set `is_ready_for_qa = true` when:
-  * The client's factual pillars (Jurisdiction + Specific Grievance/Ground + Quantum/Stakes) are established.
-  * OR the client's initial message was comprehensive and included all core facts (conclude in Turn 1!).
+- Actionable legal remedies depend on 4 concrete factual pillars across any legal domain:
+  1. Jurisdiction (City/State)
+  2. Specific grievance details (e.g. reason for termination, defect details, nature of eviction, breach)
+  3. Financial stakes & dues (e.g. unpaid salary, notice pay, gratuity, security deposit, fraud loss, purchase amount)
+  4. Contract / documentary basis (appointment letter, written contract, invoice, rent agreement)
+- NEVER conclude intake or provide final legal remedies if the client has NOT yet been asked about their financial dues/loss or written agreement/contract!
+- When the client answers a location question (e.g. "Mumbai") or answers briefly, acknowledge it warmly and immediately ask the next crucial legal question (e.g., whether they have unpaid salary, notice pay, or pending dues).
+- Set `is_ready_for_qa = true` ONLY when:
+  * ALL core pillars (Jurisdiction + Specific Grievance + Financial Quantum/Dues + Contract/Document status) are established.
   * OR the client explicitly demands immediate advice (e.g. "tell me what to do now", "give me advice now", "what are my options").
   * OR the client asks a conceptual legal question (e.g. "What is Section 138 NI Act?").
   * OR the client explicitly states they do not possess further details or documents.
-- If the client's response is a brief fragment (e.g. just "Yes I received a letter", "Yes I bought it", "Yes I am a tenant"):
-  * Do NOT conclude intake prematurely! Ask a natural, focused follow-up probing the substantive content (e.g. what reason was given, what defect occurred, or what amount is involved).
+- If high-priority legal questions remain in `unresolved_high_priority_legal_questions`:
+  * You MUST set `is_ready_for_qa = false`.
+  * Formulate `followup_question` with advocate warmth: acknowledge their previous answer (e.g., "Understood, thank you for clarifying that you were employed in Mumbai."), then naturally ask the next essential question (e.g., "Regarding your departure, did the company settle your pending salary and notice pay, or are there unpaid dues or severance still owed to you?").
 - Once ready:
   * Set `is_ready_for_qa = true` and `followup_question = null`.
   * Formulate a rich, professional legal brief in `synthesized_query` covering: Jurisdiction, Parties, Factual Chronology, Quantum/Dues, and Specific Relief Sought.
@@ -308,7 +315,7 @@ class OpenAIIntakeService:
             "guidelines": (
                 "1. Communicate with warmth, empathy, and professional poise like an experienced senior Indian advocate in a one-on-one chambers consultation.\n"
                 "2. Ask ONE focused, natural question per turn. Never bombard the client with multiple disparate questions, questionnaires, or meta-explanations like 'Why this matters is...'\n"
-                "3. Assess readiness substantively across ALL legal domains: A case is ready for advice (is_ready_for_qa = true) only when you have established: (a) Jurisdiction (State/City), (b) Specific factual grievance and relationship context (e.g. stated reason for firing/notice pay; defect and merchant refusal; lockout/deposit terms), and (c) Approximate quantum/duration of dues/loss or key documentary terms. If the client gives a brief fragment without substantive details (e.g., 'Yes I received a letter', 'Yes I have an agreement', 'Yes I bought it'), ask a natural follow-up probing the substance (e.g. what reason or terms were stated) instead of prematurely ending the consultation.\n"
+                "3. Assess readiness substantively across ALL legal domains: A case is ready for advice (is_ready_for_qa = true) ONLY when you have established: (a) Jurisdiction (State/City), (b) Specific factual grievance and relationship context (e.g. stated reason for firing/notice pay; defect and merchant refusal; lockout/deposit terms), AND (c) Approximate quantum/duration of dues/loss or key documentary terms (unpaid salary, notice pay, deposit, purchase amount, contract clause). If 'unresolved_high_priority_legal_questions' contains critical unprobed questions (such as financial dues, unpaid salary, or agreement status), DO NOT set is_ready_for_qa = true! Instead, acknowledge what the client just shared with empathy, and ask ONE natural advocate's follow-up question addressing the most critical unresolved dimension.\n"
                 "4. If the client's initial message is comprehensive with all necessary facts, resolve in Turn 1 immediately. If the client explicitly demands immediate advice or asks a conceptual legal question, set is_ready_for_qa = true immediately.\n"
                 "5. When ready, formulate a rich, detailed legal brief in synthesized_query summarizing Jurisdiction, Parties, Factual Chronology, Quantum/Dues, and Specific Relief sought."
             ),
@@ -688,9 +695,9 @@ Respond ONLY with a valid JSON object matching this structure:
                 # If the LLM determined it has sufficient facts and synthesized the query:
                 if parsed.get("is_ready_for_qa") and parsed.get("synthesized_query") and not followup:
                     latest_word_count = len(latest_msg.split())
-                    # Guard against premature closure: if user gave a very short fragment (< 8 words)
-                    # in early turns (user_msg_count < 3), and multiple high-priority legal facts remain unasked:
-                    if unasked and len(unasked) >= 2 and user_msg_count < 3 and latest_word_count < 8 and not user_demanded_advice:
+                    # Guard against premature closure: if user gave a short fragment (< 8 words) answering a previous question,
+                    # and multiple essential high-priority legal facts (e.g. dues and contract) remain unasked:
+                    if unasked and len(unasked) >= 2 and latest_word_count < 8 and not user_demanded_advice:
                         is_ready = False
                         top_missing = unasked[0]
                         followup = top_missing.sample_question
