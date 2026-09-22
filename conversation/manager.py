@@ -46,6 +46,8 @@ from database.models import (
 from database.repository import ConversationRepository
 from legal_qa.client import (
     LegalQAClient,
+    LegalQAError,
+    LegalQABadResponseError,
     LegalQATimeoutError,
     LegalQAUnavailableError,
 )
@@ -181,9 +183,9 @@ class ConversationManager:
                 question=constructed_question,
                 mode=state.mode.value,
             )
-        except (LegalQATimeoutError, LegalQAUnavailableError) as exc:
+        except (LegalQAError, Exception) as exc:
             if state.mode == Mode.ACTIONABLE and (self._answer_generator.is_configured or intake_result.direct_legal_answer):
-                logger.warning("Legal_QA service call unavailable (%s); falling back to grounded statutory answer generator.", exc)
+                logger.warning("Legal_QA service call failed or unavailable (%s); falling back to grounded statutory answer generator.", exc)
                 qa_response = {
                     "question": constructed_question,
                     "answer": "",
@@ -192,8 +194,6 @@ class ConversationManager:
                 }
             else:
                 raise
-        except Exception as exc:
-            logger.warning("Legal_QA service call skipped or failed (%s); using grounded statutory synthesis.", exc)
 
         # 7c. Process precedents (context only, never user facts!)
         precedent_authorities = self._research.process_retrieved_cases(
