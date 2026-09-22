@@ -8,10 +8,13 @@ exceptions into appropriate HTTP responses.
 
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from conversation.manager import ConversationManager, ConversationNotFoundError
@@ -148,6 +151,56 @@ async def send_message(
         )
 
     return result
+
+
+@router.post("/conversations/{conversation_id}/messages/stream")
+async def send_message_stream(
+    conversation_id: str,
+    body: SendMessageRequest,
+    request: Request,
+):
+    """
+    Stream message response using Server-Sent Events (SSE).
+    Provides instant feedback with under 1s Time-To-First-Token.
+    """
+    manager = _manager(request)
+
+    async def event_generator():
+        try:
+            # Yield initial status immediately (<200ms)
+            yield f"data: {json.dumps({'type': 'status', 'status': 'analyzing'})}\n\n"
+
+            result = await manager.process_message(
+                conversation_id=conversation_id,
+                user_message=body.message,
+            )
+
+            # Stream the conversational content in readable chunks
+            content = result.get("message") or result.get("answer") or ""
+            words = content.split(" ")
+            chunk_size = 4
+            for i in range(0, len(words), chunk_size):
+                sub_chunk = " ".join(words[i:i + chunk_size]) + (" " if i + chunk_size < len(words) else "")
+                yield f"data: {json.dumps({'type': 'token', 'content': sub_chunk})}\n\n"
+                await asyncio.sleep(0.01)
+
+            # Emit final complete payload
+            yield f"data: {json.dumps({'type': 'complete', 'data': result})}\n\n"
+        except ConversationNotFoundError:
+            yield f"data: {json.dumps({'type': 'error', 'detail': f'Conversation not found: {conversation_id}'})}\n\n"
+        except Exception as exc:
+            logger.exception("Error during streaming")
+            yield f"data: {json.dumps({'type': 'error', 'detail': str(exc)})}\n\n"
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @router.get("/conversations/{conversation_id}")

@@ -182,7 +182,7 @@ class ConversationManager:
                 mode=state.mode.value,
             )
         except (LegalQATimeoutError, LegalQAUnavailableError) as exc:
-            if state.mode == Mode.ACTIONABLE and self._answer_generator.is_configured:
+            if state.mode == Mode.ACTIONABLE and (self._answer_generator.is_configured or intake_result.direct_legal_answer):
                 logger.warning("Legal_QA service call unavailable (%s); falling back to grounded statutory answer generator.", exc)
                 qa_response = {
                     "question": constructed_question,
@@ -209,6 +209,8 @@ class ConversationManager:
         )
         if qa_response.get("answer"):
             raw_direct = self._format_direct_answer(qa_response["answer"])
+        elif intake_result.direct_legal_answer:
+            raw_direct = self._format_direct_answer(intake_result.direct_legal_answer)
         else:
             raw_direct, gen_assessment = await self._answer_generator.generate_answer(
                 case_state=case_state,

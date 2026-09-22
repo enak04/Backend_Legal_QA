@@ -68,6 +68,7 @@ class IntakeAnalysisResult:
     followup_question: str | None = None
     synthesized_query: str | None = None
     case_state: dict[str, Any] | None = None
+    direct_legal_answer: str | None = None
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -326,6 +327,7 @@ class OpenAIIntakeService:
         response = await self._client.chat.completions.create(
             model=self._model,
             temperature=0.2,
+            max_tokens=1000,
             response_format={"type": "json_object"},
             messages=[
                 {"role": "system", "content": system_prompt},
@@ -458,7 +460,8 @@ Respond ONLY with a valid JSON object matching this structure:
   ],
   "is_ready_for_qa": boolean,
   "followup_question": "string or null (If asking a follow-up, provide empathetic legal acknowledgment first, then ask ONE natural, focused question probing the specific facts)",
-  "synthesized_query": "string or null"
+  "synthesized_query": "string or null",
+  "direct_legal_answer": "string or null (MANDATORY if is_ready_for_qa is true: provide the complete, authoritative, second-person consultation guidance with Markdown sections: ### Understanding Your Situation, ### Your Legal Rights & Applicable Laws, ### What You Should Do Now, ### Important Timelines, ### Documents to Preserve, and ### A Word of Caution. Keep under 400 words.)"
 }
 """
         )
@@ -877,12 +880,14 @@ Respond ONLY with a valid JSON object matching this structure:
                     f"legal remedies, filing procedures, evidentiary fallback strategies, and {statute_focus} apply?"
                 )
 
+        direct_legal_answer = parsed.get("direct_legal_answer")
         return IntakeAnalysisResult(
             extracted_facts=extracted_facts,
             is_ready_for_qa=is_ready,
             followup_question=followup,
             synthesized_query=synthesized_query,
             case_state=universal_state.model_dump(),
+            direct_legal_answer=direct_legal_answer,
         )
 
     # Backward compatibility alias

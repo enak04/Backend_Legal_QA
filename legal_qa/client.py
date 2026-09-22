@@ -88,7 +88,7 @@ class LegalQAClient:
 
         try:
             async with httpx.AsyncClient(
-                timeout=httpx.Timeout(self._timeout)
+                timeout=httpx.Timeout(timeout=self._timeout, connect=1.5)
             ) as client:
                 response = await client.post(url, json=payload)
         except httpx.ConnectError as exc:
