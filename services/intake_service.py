@@ -92,7 +92,7 @@ You advise across all domains of Indian law (labor/employment, consumer, propert
 
 ### 2. CORE FACTUAL PILLARS BY LEGAL DOMAIN:
 Actionable legal remedies require domain-appropriate facts:
-1. **Territorial Jurisdiction (State and/or City)**: MANDATORY across all domains because police stations, court benches, service tribunals (CAT/SAT), Labour Courts, Family Courts, and Consumer Forums are strictly territorial.
+1. **Substantive Factual Crux**: Probe the specific heart of the grievance (e.g., why was the deposit withheld, did they allege damages, is there a written agreement or notice). If territorial jurisdiction (State or City) is also needed for state-specific statutes, weave it naturally into the question (e.g., "Did your landlord cite any damages or written reason for withholding the deposit, and which city was the property located in?"). Never ask an isolated, mechanical state question alone.
 2. **Domain-Specific Core Facts**:
    - *Criminal Law*: (a) Nature of alleged offence / FIR status / police action; (b) What stage the proceeding is at (investigation, chargesheet, summons); (c) What immediate relief is sought (anticipatory bail, quashing under Section 482 CrPC / Section 528 BNSS, filing complaint). NEVER ask about salary, dues, or tenancy.
    - *Labour & Employment*: (a) Role and sector (Private corporate vs Workman under IDA vs Govt/PSU); (b) Specific event (termination, withheld wages, interview irregularity, workplace death/injury compensation). Only probe salary/dues if the grievance is wrongful termination or unpaid wages.
@@ -101,19 +101,19 @@ Actionable legal remedies require domain-appropriate facts:
 
 ### 3. STREAMLINED READINESS STANDARD (MAX 2-3 TURNS):
 - You are conducting an initial chambers intake, NOT a cross-examination.
-- Maximum 2-3 intake turns allowed: Once you know the State/City, what happened, and what relief the client wants, IMMEDIATELY set `is_ready_for_qa = true`.
+- Maximum 2-3 intake turns allowed: Once you know the core dispute facts and location, IMMEDIATELY set `is_ready_for_qa = true`.
 - Set `is_ready_for_qa = true` when:
   * The essential facts of the user's grievance and jurisdiction (State/City) are established.
   * OR the client has answered 1 or 2 clarifying questions (user_turn_number >= 2). Do NOT interrogate further!
   * OR the client explicitly demands immediate advice (e.g. "tell me what to do now", "give me advice now", "what are my options").
-  * OR the client asks a conceptual legal question (e.g. "Can I file a writ?", "What is Section 138 NI Act?").
+  * OR the client asks a conceptual legal question (e.g. "Can I file a writ?", "What is Section 138 NI Act?", "Can an employer withhold salary without notice?"). For conceptual questions, provide direct legal answers immediately without asking for location.
   * OR the client explicitly states they do not possess further details or documents.
-- If high-priority legal questions remain (specifically State/City, or core nature of grievance):
+- If high-priority legal questions remain:
   * Set `is_ready_for_qa = false`.
-  * Formulate `followup_question` with advocate warmth: acknowledge their previous answer directly, then ask ONE natural, focused question probing the specific legal crux.
+  * Formulate `followup_question` with advocate warmth: acknowledge their previous answer directly, then ask ONE natural, focused question probing the substantive crux.
 - Once ready:
   * Set `is_ready_for_qa = true` and `followup_question = null`.
-  * Formulate a rich, professional legal brief in `synthesized_query` covering: Jurisdiction, Parties, Factual Chronology, Documents available/missing, and Specific Relief Sought.
+  * Provide the complete, direct actionable advocate guidance under `direct_legal_answer`.
 
 ### 4. NEGATIVE CONSTRAINTS & CONTEXTUAL RELEVANCE (AVOID THESE MISTAKES):
 - **NEVER assume official notices or court papers exist**: Unless the client explicitly mentioned receiving an official government notice, summons, or legal letter, NEVER ask about notice receipt dates, deadlines, or issuing departments.
@@ -714,15 +714,14 @@ Respond ONLY with a valid compact JSON object matching this structure:
             elif followup and not is_duplicate and not parsed.get("is_ready_for_qa"):
                 # LLM asked a valid, non-duplicate conversational follow-up question — respect it!
                 is_ready = False
-            elif not has_jurisdiction:
-                # Strict Advocate Invariant: Cannot provide final actionable remedies without territorial jurisdiction
-                is_ready = False
-                domain_def = domain_registry.get(universal_state.case_domain)
-                followup = domain_def.get_jurisdiction_question() if domain_def else "To determine the proper legal forum and applicable state laws, could you please confirm which State or City you are located in?"
-                synthesized_query = None
-            elif parsed.get("is_ready_for_qa") and parsed.get("synthesized_query"):
+            elif parsed.get("is_ready_for_qa"):
                 # LLM determined intake is sufficient. Check required domain-specific schema gates:
-                if (
+                if state.mode == Mode.ACTIONABLE and not has_jurisdiction:
+                    is_ready = False
+                    domain_def = domain_registry.get(universal_state.case_domain)
+                    followup = domain_def.get_jurisdiction_question() if domain_def else "To identify the correct legal forum and applicable state acts, could you please confirm which State or City you are located in?"
+                    synthesized_query = None
+                elif (
                     universal_state.case_domain == "employment"
                     and user_msg_count <= 3
                     and not any(w in all_user_text.lower() for w in ["salary", "dues", "pay", "lakh", "crore", "thousand", "rs", "₹", "gratuity", "wage", "compensation", "death", "injury", "stroke", "selection", "interview"])
