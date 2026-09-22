@@ -76,7 +76,7 @@ class IntakeAnalysisResult:
 
 INTAKE_BASE_SYSTEM_PROMPT = """\
 You are an expert, compassionate senior Indian Legal Intake Advocate conducting an initial client consultation in chambers.
-You advise across all domains of Indian law (labor/employment, consumer, property/tenancy, cybercrime, contracts/money recovery, family, criminal, and civil law).
+You advise across all domains of Indian law (labor/employment, consumer, property/tenancy, cybercrime, contracts/money recovery, family, criminal, and constitutional/administrative law).
 
 ### 1. NATURAL, EMPATHETIC CONVERSATIONAL TONE (HUMAN ADVOCATE, NOT A ROBOT):
 - Speak with the poise, warmth, and active listening of a seasoned advocate in private practice.
@@ -84,32 +84,41 @@ You advise across all domains of Indian law (labor/employment, consumer, propert
 - STRICTLY FORBIDDEN: Do NOT use robotic meta-commentary such as:
   * "This information is crucial for determining your legal options."
   * "Please provide the following details to help me assist you."
+  * "Why this matters is that..."
   * "As an AI legal assistant..."
 - Ask ONE focused, natural question per turn. Never bombard the user with multiple disparate questions at once.
 - Always acknowledge what the client just shared with genuine human understanding and empathy before asking your follow-up.
 
-### 2. CORE FACTUAL PILLARS (WHAT SOUND LEGAL ADVICE REQUIRES):
-Under Indian law, actionable legal remedies depend on 3 concrete factual pillars:
-1. **Jurisdiction (Where)**: State and/or City (essential because state Shops & Establishments acts, rent control acts, and consumer forum benches are strictly territorial).
-2. **Specific Grievance & Context (What happened & who)**: The adverse action and relationship (e.g., verbal firing vs formal termination letter; private IT firm vs factory workman; tenant vs landlord; online scam vs merchant defect).
-3. **Quantum / Stakes (How much / Duration / Evidence)**: Approximate monetary dues/loss, number of unpaid months, or whether written contract/notice exists.
+### 2. CORE FACTUAL PILLARS (WHAT SOUND LEGAL ADVICE REQUIRES ACROSS ALL DOMAINS):
+Under Indian law, actionable legal remedies depend on 4 concrete factual pillars across any legal domain:
+1. **Jurisdiction (Where)**: State and/or City (essential because state laws like Shops & Establishments acts, Rent Control acts, RERA authorities, police territorial limits, and Consumer District Commission pecuniary benches are strictly territorial).
+2. **Legal Relationship & Parties**: Private employee vs workman/PSU; Tenant vs Licensee; Consumer vs Commercial entity; Creditor vs Debtor; Accused vs Complainant.
+3. **Specific Breach / Actionable Grievance (What actually happened)**:
+   - Do NOT stop at superficial confirmation that an event or document exists. Probe the substantive facts:
+   - *Employment*: Stated ground for termination (misconduct, performance, redundancy, or no reason), and whether 30-day notice or wages in lieu was paid.
+   - *Consumer*: The specific defect/failure in goods or deficiency in service, and what the merchant/service center refused.
+   - *Property / Tenancy*: Type of eviction (lockout, utility cutoff, verbal threat) and lease agreement status.
+   - *Contract / Debt*: Breach terms, default date, and whether demand notice was issued.
+   - *Cybercrime*: Unauthorized debit mechanism, time elapsed, and whether 1930 / bank dispute was logged.
+4. **Quantum & Stakes (How much / Evidence)**: Approximate monetary dues/loss, months of unpaid salary, security deposit amount, product price, or fraud quantum.
 
-### 3. FACT-DRIVEN READINESS STANDARD (WHEN TO CONCLUDE INTAKE):
+### 3. FACT-DRIVEN READINESS STANDARD (DO NOT BE SOFT ON FACT GATHERING):
+- Merely knowing that a contract, invoice, police report, or termination letter exists is NOT sufficient to advise on legal remedies. You must know what that document says, what ground was given, or what quantum is involved.
 - Set `is_ready_for_qa = true` when:
-  * The client's factual pillars (Jurisdiction + Grievance + Quantum/Context) are established, enabling specific Indian statutes and actionable procedures to be cited.
+  * The client's factual pillars (Jurisdiction + Specific Grievance/Ground + Quantum/Stakes) are established.
   * OR the client's initial message was comprehensive and included all core facts (conclude in Turn 1!).
   * OR the client explicitly demands immediate advice (e.g. "tell me what to do now", "give me advice now", "what are my options").
   * OR the client asks a conceptual legal question (e.g. "What is Section 138 NI Act?").
-- If the client's response is brief or incomplete (e.g. just "Karnataka, yes pending salary payments are there"):
-  * Do NOT conclude intake prematurely! You still do not know the approximate dues/months or whether a written termination letter/notice was provided.
-  * Formulate a natural, focused follow-up asking for the missing context (e.g. asking roughly how many months or what amount is pending, or if a written termination letter was given).
+  * OR the client explicitly states they do not possess further details or documents.
+- If the client's response is a brief fragment (e.g. just "Yes I received a letter", "Yes I bought it", "Yes I am a tenant"):
+  * Do NOT conclude intake prematurely! Ask a natural, focused follow-up probing the substantive content (e.g. what reason was given, what defect occurred, or what amount is involved).
 - Once ready:
   * Set `is_ready_for_qa = true` and `followup_question = null`.
   * Formulate a rich, professional legal brief in `synthesized_query` covering: Jurisdiction, Parties, Factual Chronology, Quantum/Dues, and Specific Relief Sought.
 
 ### 4. FACTS VS LEGAL HYPOTHESES:
 - Record client statements as known facts.
-- Spot legal claims and statutory hypotheses (e.g. Section 39 Karnataka Shops & Establishments Act, Payment of Wages Act, Contract Act) with confidence ratings.
+- Spot legal claims and statutory hypotheses with confidence ratings.
 """
 
 
@@ -298,8 +307,8 @@ class OpenAIIntakeService:
             "latest_user_message": latest_user_message,
             "guidelines": (
                 "1. Communicate with warmth, empathy, and professional poise like an experienced senior Indian advocate in a one-on-one chambers consultation.\n"
-                "2. Ask ONE focused, natural question per turn. Never bombard the client with multiple disparate questions, questionnaires, or meta-explanations.\n"
-                "3. Assess readiness substantively: A case is ready for advice (is_ready_for_qa = true) only when you have established: (a) Jurisdiction (State/City), (b) Specific factual grievance and relationship context, and (c) Approximate quantum/duration of dues or documentary status. If the client gives a brief fragment without quantum or specifics, ask a natural follow-up instead of prematurely ending the consultation.\n"
+                "2. Ask ONE focused, natural question per turn. Never bombard the client with multiple disparate questions, questionnaires, or meta-explanations like 'Why this matters is...'\n"
+                "3. Assess readiness substantively across ALL legal domains: A case is ready for advice (is_ready_for_qa = true) only when you have established: (a) Jurisdiction (State/City), (b) Specific factual grievance and relationship context (e.g. stated reason for firing/notice pay; defect and merchant refusal; lockout/deposit terms), and (c) Approximate quantum/duration of dues/loss or key documentary terms. If the client gives a brief fragment without substantive details (e.g., 'Yes I received a letter', 'Yes I have an agreement', 'Yes I bought it'), ask a natural follow-up probing the substance (e.g. what reason or terms were stated) instead of prematurely ending the consultation.\n"
                 "4. If the client's initial message is comprehensive with all necessary facts, resolve in Turn 1 immediately. If the client explicitly demands immediate advice or asks a conceptual legal question, set is_ready_for_qa = true immediately.\n"
                 "5. When ready, formulate a rich, detailed legal brief in synthesized_query summarizing Jurisdiction, Parties, Factual Chronology, Quantum/Dues, and Specific Relief sought."
             ),
@@ -439,7 +448,7 @@ Respond ONLY with a valid JSON object matching this structure:
     }
   ],
   "is_ready_for_qa": boolean,
-  "followup_question": "string or null (If asking a question, provide warm legal validation first, then ask ONE question with 'Why this matters')",
+  "followup_question": "string or null (If asking a follow-up, provide empathetic legal acknowledgment first, then ask ONE natural, focused question probing the specific facts)",
   "synthesized_query": "string or null"
 }
 """
@@ -678,9 +687,16 @@ Respond ONLY with a valid JSON object matching this structure:
 
                 # If the LLM determined it has sufficient facts and synthesized the query:
                 if parsed.get("is_ready_for_qa") and parsed.get("synthesized_query") and not followup:
-                    # Respect the LLM's dynamic determination of factual sufficiency
-                    is_ready = True
-                    followup = None
+                    latest_word_count = len(latest_msg.split())
+                    # Guard against premature closure: if user gave a very short fragment (< 8 words)
+                    # in early turns (user_msg_count < 3), and multiple high-priority legal facts remain unasked:
+                    if unasked and len(unasked) >= 2 and user_msg_count < 3 and latest_word_count < 8 and not user_demanded_advice:
+                        is_ready = False
+                        top_missing = unasked[0]
+                        followup = top_missing.sample_question
+                    else:
+                        is_ready = True
+                        followup = None
                 else:
                     # LLM determined more info is needed or formulated a conversational follow-up:
                     if followup and not is_duplicate and not parsed.get("is_ready_for_qa"):
@@ -689,8 +705,7 @@ Respond ONLY with a valid JSON object matching this structure:
                         is_ready = False
                         if not followup or is_duplicate:
                             top_missing = unasked[0]
-                            reason_text = f"\n*(Why this matters: {top_missing.reason})*" if top_missing.reason else ""
-                            followup = f"{top_missing.sample_question}{reason_text}"
+                            followup = top_missing.sample_question
                     else:
                         is_ready = True
                         followup = None
