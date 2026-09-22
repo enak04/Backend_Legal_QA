@@ -270,37 +270,164 @@ class GroundedLegalAnswerGenerator:
             for auth in authorities
         ]
 
+        # Check government employment
+        is_govt = False
+        if isinstance(state.domain_extensions, dict):
+            ext_emp = state.domain_extensions.get("employment", {})
+            if isinstance(ext_emp, dict) and ext_emp.get("employment_type") == "government":
+                is_govt = True
+        if not is_govt:
+            for f in state.known_facts:
+                f_str = str(f).lower()
+                if "government" in f_str or "civil servant" in f_str:
+                    is_govt = True
+                    break
+        if not is_govt and isinstance(state.parties, list):
+            for p in state.parties:
+                p_str = str(p).lower()
+                if "government" in p_str or "public service" in p_str:
+                    is_govt = True
+                    break
+
+        # Evidence & document assessment
+        evidence_assessment = self._build_evidence_assessment(state, domain, is_govt)
+
         # Action plan
-        action_plan = self._build_action_plan(state, domain)
+        action_plan = self._build_action_plan(state, domain, is_govt)
 
         return LegalAssessment(
             summary=facts_summary,
             primary_domain=domain,
             confirmed_issues=[i.issue for i in state.issues if i.status != "ruled_out"],
             applicable_authorities=authorities,
-            evidence_assessment={
-                "provided_count": len(state.evidence),
-                "items": [e.model_dump() for e in state.evidence],
-            },
+            evidence_assessment=evidence_assessment,
             action_plan=action_plan,
             limitations_and_risks=[],
             claims=claims,
             ready_for_final_remedy=True,
         )
 
-    def _build_action_plan(self, state: UniversalCaseState, domain: str) -> list[str]:
-        """Build a prioritised action plan based on domain."""
+    def _build_evidence_assessment(
+        self,
+        state: UniversalCaseState,
+        domain: str,
+        is_govt: bool = False,
+    ) -> dict[str, Any]:
+        """
+        Deep evidentiary analysis:
+        1. Confirmed documents provided by client
+        2. Required documents checklist for court/tribunal filing
+        3. Evidentiary fallback strategy if documents are missing or withheld
+        """
+        d = domain.lower()
+        required_docs: list[str] = []
+        fallback_strategy: list[str] = []
+
+        if "employment" in d or "salary" in d:
+            if is_govt:
+                required_docs = [
+                    "Appointment Letter / Service Confirmation Order",
+                    "Official Termination / Dismissal Order or Show Cause Notice",
+                    "Departmental Inquiry Officer's Report and Findings (if inquiry was conducted)",
+                    "Last 3-6 months' Salary Slips / Bank Account Statement showing non-payment of ₹3 Lakh dues",
+                    "Copies of statutory representations or appeals filed before the Departmental Appellate Authority"
+                ]
+                fallback_strategy = [
+                    "If official termination order or inquiry findings are withheld: File an urgent application under Section 6 of the Right to Information (RTI) Act, 2005 requesting certified copies of the termination order, inquiry report, and file notings.",
+                    "If appointment order is missing: Use Bank Account salary credit statements, GPF/NPS statement, Service Book extract, and Employee ID Card as secondary proof of government employment.",
+                    "If unpaid dues calculation is disputed: Submit a requisition under RTI for the LPC (Last Pay Certificate) and due-drawn statement from the DDO (Drawing and Disbursing Officer)."
+                ]
+            else:
+                required_docs = [
+                    "Offer Letter / Employment Agreement (stating designation, salary, notice period clause)",
+                    "Formal Termination Letter / Email stating grounds for dismissal",
+                    "Salary slips for the last 3 months + Bank statements reflecting salary credits and non-payment",
+                    "Full & Final (F&F) settlement statement or email correspondence demanding pending dues",
+                    "EPFO / UAN passbook showing employment tenure and PF contributions"
+                ]
+                fallback_strategy = [
+                    "If written employment contract is missing: Produce Bank statements showing regular monthly salary credits from the employer, EPFO UAN ledger, ESIC registration, company email signature, and ID card as conclusive secondary proof of employment.",
+                    "If termination was verbal without written notice: Immediately send an email/speed post letter placing on record that you reported for duty and were verbally turned away; demand written reasons and formal notice under protest.",
+                    "If dues records are withheld by employer: Move an application under Section 33C(2) Industrial Disputes Act / Payment of Wages Act requiring the employer to produce wage registers and muster rolls before the Authority."
+                ]
+        elif "property" in d or "tenant" in d:
+            required_docs = [
+                "Registered Lease / Leave and License Agreement",
+                "Rent receipts / Bank UPI transaction statements proving regular payment of rent",
+                "Security deposit payment receipt / bank debit reference",
+                "Formal written notice of termination/eviction (if served)",
+                "Photographs / Police Diary (GD) entry of lockout or utility disconnection"
+            ]
+            fallback_strategy = [
+                "If written agreement is oral or expired: Use monthly bank/UPI rent debit statements and electricity/gas bills in client's name to prove settled possession.",
+                "If landlord cuts off electricity or water: File an emergency application under Section 29 Maharashtra Rent Control Act / state equivalent before the Rent Controller / Civil Court for immediate restoration with police assistance."
+            ]
+        elif "consumer" in d:
+            required_docs = [
+                "Tax Invoice / Retail Bill of Purchase",
+                "Warranty Card / Product Guarantee Certificate",
+                "Authorized Service Center Inspection Report / Job Sheet acknowledging the defect",
+                "Written complaint / email chain / support chat transcripts requesting repair/replacement/refund",
+                "Formal 15-day statutory legal notice served on manufacturer and seller"
+            ]
+            fallback_strategy = [
+                "If physical bill is lost: Download electronic invoice from the e-commerce portal, or obtain transaction confirmation from credit card / UPI bank statement under Rule 5 of Consumer Protection (E-Commerce) Rules, 2020.",
+                "If service center refused to give job sheet: Send an email capturing the refusal with date and time of visit, and file complaint on the National Consumer Helpline (consumerhelpline.gov.in / 1915) to establish documentary trail."
+            ]
+        elif "cyber" in d:
+            required_docs = [
+                "Bank Account Statement showing unauthorized debit transactions with UTR/Transaction IDs",
+                "Copy of formal written zero-liability complaint submitted to bank within 72 hours",
+                "Acknowledgment receipt from National Cyber Crime Reporting Portal (cybercrime.gov.in / 1930)",
+                "Screenshots of fraudulent SMS, phishing links, spoofed emails, or communication channels"
+            ]
+            fallback_strategy = [
+                "If bank refuses to accept zero-liability complaint: Send complaint via registered email to the Nodal Grievance Redressal Officer of the bank, and escalate to the RBI Banking Ombudsman (cms.rbi.org.in).",
+                "If SMS/call logs are deleted: Request call detail records (CDR) and SMS logs from the telecom service provider immediately."
+            ]
+        else:
+            required_docs = [
+                "Written agreement, purchase order, or correspondence establishing legal relationship",
+                "Bank statements / financial receipts establishing monetary transaction / loss",
+                "Formal statutory legal notice demanding performance / remedy"
+            ]
+            fallback_strategy = [
+                "If agreement is oral: Compile bank records, WhatsApp admissions, and email trails to substantiate oral contract under Section 10 of the Indian Contract Act, 1872."
+            ]
+
+        return {
+            "provided_count": len(state.evidence),
+            "items": [e.model_dump() for e in state.evidence],
+            "required_documents_checklist": required_docs,
+            "evidentiary_fallback_strategy": fallback_strategy,
+        }
+
+    def _build_action_plan(
+        self,
+        state: UniversalCaseState,
+        domain: str,
+        is_govt: bool = False,
+    ) -> list[str]:
+        """Build a prioritised action plan based on domain and government status."""
         taken_lower = [a.action.lower() for a in state.actions_already_taken]
         plan: list[str] = []
         step = 1
         d = domain.lower()
 
         if "employment" in d or "salary" in d:
-            if not any("notice" in a or "demand" in a for a in taken_lower):
-                plan.append(f"{step}. Issue a formal legal demand notice to your employer.")
+            if is_govt:
+                plan.append(f"{step}. Submit a formal departmental representation/appeal to the designated Appellate Authority under Service Rules challenging wrongful dismissal.")
                 step += 1
-            plan.append(f"{step}. Approach the Labour Commissioner / competent authority.")
-            step += 1
+                plan.append(f"{step}. If representation is unanswered or rejected, approach the Central Administrative Tribunal (CAT) or State Administrative Tribunal under Section 19 of the Administrative Tribunals Act, 1985 / High Court under Article 226.")
+                step += 1
+                plan.append(f"{step}. If service records, inquiry reports, or due-drawn statements are withheld, file an urgent application under Section 6 of the RTI Act, 2005.")
+                step += 1
+            else:
+                if not any("notice" in a or "demand" in a for a in taken_lower):
+                    plan.append(f"{step}. Issue a formal legal demand notice to your employer.")
+                    step += 1
+                plan.append(f"{step}. Approach the Labour Commissioner / competent authority under the Shops & Establishments Act or Industrial Disputes Act.")
+                step += 1
         elif "cyber" in d:
             if not any("1930" in a or "cyber" in a for a in taken_lower):
                 plan.append(f"{step}. Dial 1930 and register on cybercrime.gov.in immediately.")

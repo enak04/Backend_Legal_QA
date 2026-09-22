@@ -293,3 +293,114 @@ class TestConversationManagerWithOpenAI:
         # Maharashtra Shops and Establishments Act must be retrieved for Maharashtra
         assert any("Maharashtra Shops" in s for s in sources), "State-specific employment act not retrieved!"
 
+    @pytest.mark.asyncio
+    async def test_user_dodges_jurisdiction_prevents_premature_closure(self, mock_openai_response):
+        """
+        Verify that if the user repeats their statement without providing State/City,
+        the intake engine does NOT declare ready without territorial jurisdiction.
+        """
+        service = OpenAIIntakeService(api_key="sk-test-key")
+        state = ConversationRecord(mode=Mode.ACTIONABLE)
+
+        add_user_message(state, "I was fired from my job")
+        state.messages.append(type("Msg", (), {"role": MessageRole.ASSISTANT, "content": "Can you please share which state or city you were employed in?"})())
+        add_user_message(state, "I was fired from my job")  # Dodged jurisdiction!
+        state.messages.append(type("Msg", (), {"role": MessageRole.ASSISTANT, "content": "Are there any unpaid salary or dues?"})())
+        add_user_message(state, "yes 2-3 lakhs of unpaid money")
+        state.messages.append(type("Msg", (), {"role": MessageRole.ASSISTANT, "content": "Do you have a written employment contract?"})())
+        add_user_message(state, "yes employment contract is there")
+        state.messages.append(type("Msg", (), {"role": MessageRole.ASSISTANT, "content": "Was this private or government?"})())
+        add_user_message(state, "government")
+
+        # OpenAI attempts to finalize intake without state/city:
+        openai_payload = {
+            "case": {"domain": "employment", "summary": "Government employee terminated with dues"},
+            "jurisdiction": {"country": "India", "state": None, "city": None},
+            "is_ready_for_qa": True,
+            "followup_question": None,
+            "synthesized_query": "Client was terminated from a government job with 3 lakh dues...",
+        }
+
+        with patch.object(
+            service._client.chat.completions,
+            "create",
+            new_callable=AsyncMock,
+            return_value=mock_openai_response(openai_payload),
+        ):
+            res = await service.analyze_turn(state, "government")
+            assert not res.is_ready_for_qa, "Must NOT finalize intake when State/City is null in Actionable mode!"
+            assert res.followup_question is not None
+            assert any(w in res.followup_question.lower() for w in ["state", "city", "jurisdiction"])
+
+    @pytest.mark.asyncio
+    async def test_user_asks_if_state_matters_explains_authoritatively_and_demands_state(self, mock_openai_response):
+        """
+        Verify that when a client asks 'does it notmatter which state I am in?',
+        the system explains territorial jurisdiction authoritatively and refuses premature closure.
+        """
+        service = OpenAIIntakeService(api_key="sk-test-key")
+        state = ConversationRecord(mode=Mode.ACTIONABLE)
+
+        add_user_message(state, "I was fired from my job")
+        state.messages.append(type("Msg", (), {"role": MessageRole.ASSISTANT, "content": "Which state or city were you employed in?"})())
+        add_user_message(state, "does it notmatter which state I am in?")
+
+        openai_payload = {
+            "case": {"domain": "employment"},
+            "jurisdiction": {"country": "India", "state": None, "city": None},
+            "is_ready_for_qa": True,
+            "followup_question": None,
+            "synthesized_query": "Client asks about termination...",
+        }
+
+        with patch.object(
+            service._client.chat.completions,
+            "create",
+            new_callable=AsyncMock,
+            return_value=mock_openai_response(openai_payload),
+        ):
+            res = await service.analyze_turn(state, "does it notmatter which state I am in?")
+            assert not res.is_ready_for_qa, "Must NOT finalize intake when user asks if state matters!"
+            assert "territorial jurisdiction matters critically" in res.followup_question.lower()
+            assert "central administrative tribunal" in res.followup_question.lower()
+
+    @pytest.mark.asyncio
+    async def test_government_employment_authorities_and_evidentiary_fallback(self, tmp_path):
+        """
+        Verify that government employee disputes retrieve Administrative Tribunals Act 1985 & Art 311,
+        and enrich the final direct answer with required documents and evidentiary fallback strategy.
+        """
+        from conversation.cases.models import Financial, Jurisdiction, LegalIssue, UniversalCaseState
+        from legal_qa.research import legal_research_layer
+        from legal_qa.grounded_generator import grounded_answer_generator
+
+        ucs = UniversalCaseState(
+            case_domain="employment",
+            jurisdiction=Jurisdiction(country="India", state="Delhi", city="New Delhi"),
+            issues=[LegalIssue(issue="wrongful termination and unpaid dues", domain="employment", status="confirmed")],
+            financial=Financial(amount=300000.0, amount_raw="₹3 Lakh"),
+            domain_extensions={"employment": {"employment_type": "government", "written_contract": "yes"}},
+        )
+
+        auths = legal_research_layer.research_authorities(ucs)
+        sources = [a.source for a in auths]
+
+        # Must contain Administrative Tribunals Act, 1985 & Constitution of India
+        assert any("Administrative Tribunals Act" in s for s in sources), "Administrative Tribunals Act missing for govt employee!"
+        assert any("Constitution of India" in s for s in sources), "Article 311 / Constitution missing for govt employee!"
+
+        # Must NOT contain Industrial Disputes Act or Shops & Establishments Act
+        assert not any("Industrial Disputes Act" in s for s in sources), "IDA wrongly retrieved for govt employee!"
+        assert not any("Shops" in s for s in sources), "Shops Act wrongly retrieved for govt employee!"
+
+        # Verify evidence assessment has required docs and RTI fallback
+        assessment = grounded_answer_generator.build_assessment(ucs, auths)
+        assert assessment.evidence_assessment is not None
+        req_docs = assessment.evidence_assessment.get("required_documents_checklist", [])
+        fallback = assessment.evidence_assessment.get("evidentiary_fallback_strategy", [])
+
+        assert any("Appointment" in d for d in req_docs)
+        assert any("Termination" in d for d in req_docs)
+        assert any("Right to Information" in f or "RTI" in f for f in fallback)
+
+

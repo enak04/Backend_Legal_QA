@@ -89,6 +89,28 @@ STATUTORY_CATALOG: list[dict[str, Any]] = [
         "applicability_conditions": ["completed 5 years continuous service", "establishment having 10 or more employees"],
         "key_excerpt": "Gratuity shall be payable to an employee on the termination of his employment after he has rendered continuous service for not less than five years.",
     },
+    {
+        "source": "Administrative Tribunals Act, 1985",
+        "authority_type": "statute",
+        "domain": "employment",
+        "jurisdiction": "Central / India",
+        "provision": "Section 14 & Section 19",
+        "status": "current",
+        "relevance": "Exclusive jurisdiction of Central Administrative Tribunal (CAT) and State Administrative Tribunals (SAT) over service matters, wrongful dismissal, and unpaid dues of persons appointed to public services and civil posts.",
+        "applicability_conditions": ["government or public service employee", "civil post under Union or State", "exhaustion of departmental remedies"],
+        "key_excerpt": "The Central Administrative Tribunal shall exercise all the jurisdiction, powers and authority exercisable by all courts in relation to recruitment and conditions of service of persons appointed to civil services.",
+    },
+    {
+        "source": "Constitution of India",
+        "authority_type": "statute",
+        "domain": "employment",
+        "jurisdiction": "Central / India",
+        "provision": "Article 311 & Article 226",
+        "status": "current",
+        "relevance": "Constitutional protection for government servants: no dismissal, removal, or reduction in rank without a formal departmental inquiry giving reasonable opportunity of being heard; enforceable via writ petition before the High Court.",
+        "applicability_conditions": ["member of civil service of Union or State", "dismissal without inquiry or violation of natural justice"],
+        "key_excerpt": "No person who is a member of a civil service of the Union or an all-India service or a civil service of a State shall be dismissed or removed by an authority subordinate to that by which he was appointed, and only after an inquiry.",
+    },
 
     # ── Consumer Protection ───────────────────────────────────
     {
@@ -348,6 +370,25 @@ class LegalResearchLayer:
         elif any(w in raw_domain for w in ["govt", "government", "admin", "rti"]):
             target_domain = "government"
 
+        # Government employment check
+        is_govt = False
+        if isinstance(case_state.domain_extensions, dict):
+            ext_emp = case_state.domain_extensions.get("employment", {})
+            if isinstance(ext_emp, dict) and ext_emp.get("employment_type") == "government":
+                is_govt = True
+        if not is_govt:
+            for f in case_state.known_facts:
+                f_str = str(f).lower()
+                if "government" in f_str or "civil servant" in f_str:
+                    is_govt = True
+                    break
+        if not is_govt and isinstance(case_state.parties, list):
+            for p in case_state.parties:
+                p_str = str(p).lower()
+                if "government" in p_str or "public service" in p_str:
+                    is_govt = True
+                    break
+
         scored: list[tuple[float, dict[str, Any]]] = []
 
         for item in self._catalog:
@@ -364,6 +405,17 @@ class LegalResearchLayer:
             item_jur = item["jurisdiction"].lower()
             item_relevance = item["relevance"].lower()
             item_excerpt = item["key_excerpt"].lower()
+
+            # Employment subtype alignment: Government vs Private
+            if target_domain == "employment":
+                if is_govt:
+                    if "administrative tribunals" in item_source or "constitution of india" in item_source:
+                        score += 15.0
+                    elif "industrial disputes" in item_source or "shops" in item_source:
+                        score -= 25.0  # Civil servants under Union/State are governed by Service Rules & Article 311, not IDA/Shops
+                else:
+                    if "administrative tribunals" in item_source or "constitution of india" in item_source:
+                        score -= 20.0  # Private employees cannot approach CAT or invoke Article 311
 
             # State-specific matching
             if item_jur != "central / india":

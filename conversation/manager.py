@@ -199,16 +199,22 @@ class ConversationManager:
             authorities=all_authorities,
         )
         if qa_response.get("answer"):
-            direct_answer = self._format_direct_answer(qa_response["answer"])
+            raw_direct = self._format_direct_answer(qa_response["answer"])
         else:
-            direct_answer, gen_assessment = await self._answer_generator.generate_answer(
+            raw_direct, gen_assessment = await self._answer_generator.generate_answer(
                 case_state=case_state,
                 authorities=all_authorities,
                 base_qa_answer=None,
             )
             if gen_assessment:
                 legal_assessment = gen_assessment
-            direct_answer = self._format_direct_answer(direct_answer)
+            raw_direct = self._format_direct_answer(raw_direct)
+
+        direct_answer = self._enrich_answer_with_advocate_evidence(
+            raw_direct,
+            case_state=case_state,
+            evidence_assessment=legal_assessment.evidence_assessment,
+        )
 
         # 9. Persist result and structured assessment
         result = LegalQAResult(
@@ -319,6 +325,74 @@ class ConversationManager:
         text = raw_answer
         for pattern, replacement in replacements:
             text = re.sub(pattern, replacement, text)
+        return text
+
+    @classmethod
+    def _enrich_answer_with_advocate_evidence(
+        cls,
+        answer: str,
+        case_state: UniversalCaseState,
+        evidence_assessment: dict[str, Any] | None,
+    ) -> str:
+        text = cls._format_direct_answer(answer)
+        if not text:
+            return text
+
+        # Check government employment
+        is_govt = False
+        if isinstance(case_state.domain_extensions, dict):
+            ext_emp = case_state.domain_extensions.get("employment", {})
+            if isinstance(ext_emp, dict) and ext_emp.get("employment_type") == "government":
+                is_govt = True
+        if not is_govt:
+            for f in case_state.known_facts:
+                if "government" in str(f).lower() or "civil servant" in str(f).lower():
+                    is_govt = True
+                    break
+
+        if is_govt:
+            # Cleanse erroneous references to Industrial Disputes Act or Labour Courts for civil servants
+            text = re.sub(
+                r"\b(?:under\s+the\s+)?Industrial\s+Disputes\s+Act(?:,\s*1947)?",
+                "under the Administrative Tribunals Act, 1985 (Section 19) and Article 311 of the Constitution of India",
+                text,
+                flags=re.I,
+            )
+            text = re.sub(
+                r"\b(?:appropriate\s+)?labor\s+court\s+or\s+tribunal\b",
+                "Central Administrative Tribunal (CAT) / State Administrative Tribunal or High Court under Article 226",
+                text,
+                flags=re.I,
+            )
+            text = re.sub(
+                r"\blabor\s+department\b",
+                "Appellate Authority under Service Rules or Central Administrative Tribunal",
+                text,
+                flags=re.I,
+            )
+            text = re.sub(
+                r"\bConsumer\s+Protection\s+Act(?:,\s*2019)?\b",
+                "Administrative Tribunals Act, 1985",
+                text,
+                flags=re.I,
+            )
+
+        # Append deep documentary evidence checklist & fallback strategy if not already present
+        if evidence_assessment and ("fallback" not in text.lower() and "checklist" not in text.lower()):
+            req_docs = evidence_assessment.get("required_documents_checklist") or []
+            fallback = evidence_assessment.get("evidentiary_fallback_strategy") or []
+            if req_docs or fallback:
+                parts = [text.strip(), "\n\n### Evidentiary Strategy & Required Documents"]
+                if req_docs:
+                    parts.append("**Primary Documents to Gather**:")
+                    for doc in req_docs[:4]:
+                        parts.append(f"- {doc}")
+                if fallback:
+                    parts.append("\n**If Documents are Withheld or Missing (Evidentiary Fallback)**:")
+                    for fb in fallback[:3]:
+                        parts.append(f"- {fb}")
+                text = "\n".join(parts)
+
         return text
 
 
