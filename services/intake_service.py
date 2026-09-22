@@ -690,6 +690,18 @@ Respond ONLY with a valid JSON object matching this structure:
                 or extracted_facts.get("city")
             )
 
+            has_employment_type = bool(
+                extracted_facts.get("employment_type")
+                or (isinstance(universal_state.domain_extensions, dict) and universal_state.domain_extensions.get("employment", {}).get("employment_type"))
+                or any(
+                    kw in all_user_text.lower()
+                    for kw in [
+                        "private company", "private firm", "private tech", "startup", "mnc", "corporate",
+                        "tech firm", "it company", "government", "govt", "psu", "civil servant", "public sector"
+                    ]
+                )
+            )
+
             # Re-evaluate missing facts with updated universal_state and user messages
             missing_after = self._fallback_engine.evaluate_missing_facts(universal_state, user_messages_text=all_user_text)
             high_priority_missing = [m for m in missing_after if m.legal_importance == "HIGH"]
@@ -709,7 +721,7 @@ Respond ONLY with a valid JSON object matching this structure:
                 elif "contract" in m.fact_key or "document" in m.fact_key:
                     fact_still_missing = not (universal_state.evidence or (isinstance(universal_state.domain_extensions, dict) and universal_state.domain_extensions.get("employment", {}).get("written_contract")))
                 elif "employment_type" in m.fact_key or "employer" in m.fact_key:
-                    fact_still_missing = not (isinstance(universal_state.domain_extensions, dict) and universal_state.domain_extensions.get("employment", {}).get("employment_type"))
+                    fact_still_missing = not has_employment_type
                 else:
                     fact_still_missing = True
 
@@ -739,6 +751,26 @@ Respond ONLY with a valid JSON object matching this structure:
                         else "To determine the proper legal forum and applicable state laws, could you please confirm which State or City you are located in?"
                     )
                     followup = loc_q
+                    synthesized_query = None
+                elif (
+                    universal_state.case_domain == "employment"
+                    and not (universal_state.financial.amount or universal_state.financial.amount_raw or universal_state.financial.dues_period)
+                    and not user_demanded_advice
+                    and not self._is_question_duplicate("Are there any unpaid salary, notice pay, gratuity, or pending dues, and what is the approximate amount remaining?", previous_questions_lower)
+                ):
+                    is_ready = False
+                    followup = "Are there any unpaid salary, notice pay, gratuity, or pending dues, and what is the approximate amount remaining?"
+                    synthesized_query = None
+                elif (
+                    universal_state.case_domain == "employment"
+                    and not has_employment_type
+                    and not user_demanded_advice
+                    and not self._is_question_duplicate("Was this a private company/firm, or a government/PSU organization?", previous_questions_lower)
+                ):
+                    # Strict Advocate Invariant: Cannot determine applicable statutory regime
+                    # (Shops & Establishments Act vs Administrative Tribunals Act vs IDA) without employer type!
+                    is_ready = False
+                    followup = "Was this a private company/firm, or a government/PSU organization?"
                     synthesized_query = None
                 elif (
                     universal_state.case_domain == "employment"

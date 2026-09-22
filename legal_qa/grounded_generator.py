@@ -244,7 +244,22 @@ class GroundedLegalAnswerGenerator:
         authorities: list[RetrievedAuthority],
     ) -> LegalAssessment:
         """Build the structured LegalAssessment for API metadata."""
-        domain = state.case_domain or state.primary_category or "General Legal Dispute"
+        domain = state.case_domain or state.primary_category or ""
+        if not domain or domain.lower() in ("general", "general legal dispute"):
+            for iss in state.issues:
+                if iss.domain and iss.domain.lower() not in ("general", "general legal dispute"):
+                    domain = iss.domain
+                    break
+        if not domain or domain.lower() in ("general", "general legal dispute"):
+            issue_text = " ".join([i.issue for i in state.issues] + [state.case_type or "", state.summary or ""]).lower()
+            if any(w in issue_text for w in ["fired", "terminat", "salary", "wage", "employ"]):
+                domain = "employment"
+            elif any(w in issue_text for w in ["rent", "evict", "tenant", "landlord", "flat", "property"]):
+                domain = "property"
+            elif any(w in issue_text for w in ["consumer", "defect", "warranty", "refund"]):
+                domain = "consumer"
+            else:
+                domain = "General Legal Dispute"
 
         # Facts summary
         facts_parts: list[str] = []

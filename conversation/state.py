@@ -89,8 +89,28 @@ def get_universal_case_state(record: ConversationRecord) -> UniversalCaseState:
         try:
             return UniversalCaseState(**raw)
         except Exception:
-            pass
-    return UniversalCaseState()
+            domain = raw.get("case_domain") or record.facts.get("detected_domain") or "general"
+            jur_raw = raw.get("jurisdiction", {}) if isinstance(raw.get("jurisdiction"), dict) else {}
+            return UniversalCaseState(
+                case_domain=domain,
+                jurisdiction=Jurisdiction(
+                    country=jur_raw.get("country", "India"),
+                    state=jur_raw.get("state") or record.facts.get("state"),
+                    city=jur_raw.get("city") or record.facts.get("city"),
+                ),
+                primary_category=raw.get("primary_category") or domain.title(),
+                case_type=raw.get("case_type") or record.facts.get("core_issue"),
+            )
+    domain = record.facts.get("detected_domain") or "general"
+    return UniversalCaseState(
+        case_domain=domain,
+        jurisdiction=Jurisdiction(
+            country="India",
+            state=record.facts.get("state"),
+            city=record.facts.get("city"),
+        ),
+        primary_category=domain.title(),
+    )
 
 
 def set_universal_case_state(record: ConversationRecord, case_state: UniversalCaseState) -> None:

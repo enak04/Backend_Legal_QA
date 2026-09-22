@@ -7,10 +7,11 @@ Designed to represent ANY legal matter under Indian law without domain bias.
 
 from __future__ import annotations
 
+import re
 import uuid
 from datetime import datetime, timezone
 from typing import Any
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 # ── Jurisdiction ──────────────────────────────────────────────
@@ -84,11 +85,33 @@ class Dates(BaseModel):
 
 class Financial(BaseModel):
     """Financial aspect of the claim or dispute."""
-    amount: float | None = None
+    amount: float | str | None = None
     amount_raw: str | None = None
     currency: str = "INR"
     loss: str | None = None
     dues_period: str | None = None
+
+    @field_validator("amount", mode="before")
+    @classmethod
+    def _parse_amount(cls, v: Any) -> float | str | None:
+        if v is None or isinstance(v, (int, float)):
+            return float(v) if v is not None else None
+        if isinstance(v, str):
+            clean = v.strip().lower()
+            lakh_match = re.search(r"([\d,]+(?:\.\d+)?)\s*lakh", clean)
+            if lakh_match:
+                try:
+                    num_val = float(lakh_match.group(1).replace(",", ""))
+                    return num_val * 100000.0
+                except ValueError:
+                    pass
+            num_match = re.search(r"[\d,]+(?:\.\d+)?", clean)
+            if num_match:
+                try:
+                    return float(num_match.group(0).replace(",", ""))
+                except ValueError:
+                    pass
+        return v
 
 
 # ── Evidence & Communications ─────────────────────────────────

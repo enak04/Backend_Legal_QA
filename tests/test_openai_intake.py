@@ -403,4 +403,45 @@ class TestConversationManagerWithOpenAI:
         assert any("Termination" in d for d in req_docs)
         assert any("Right to Information" in f or "RTI" in f for f in fallback)
 
+    @pytest.mark.asyncio
+    async def test_employment_must_ask_employer_type_before_closure(self, mock_openai_response):
+        """
+        Verify that in an employment dispute where jurisdiction, dues, contract, and termination letter
+        are established, the intake engine CANNOT conclude without asking whether the employer
+        was a private company or government/PSU organization.
+        """
+        service = OpenAIIntakeService(api_key="sk-test-key")
+        state = ConversationRecord(mode=Mode.ACTIONABLE)
+
+        add_user_message(state, "I was fired from my job")
+        state.messages.append(type("Msg", (), {"role": MessageRole.ASSISTANT, "content": "Which state or city were you employed in?"})())
+        add_user_message(state, "karnataka bangalroe")
+        state.messages.append(type("Msg", (), {"role": MessageRole.ASSISTANT, "content": "Do you have unpaid salary or dues?"})())
+        add_user_message(state, "about 2-3 lakhs")
+        state.messages.append(type("Msg", (), {"role": MessageRole.ASSISTANT, "content": "Do you have a written employment contract?"})())
+        add_user_message(state, "yes I have written employment contract")
+        state.messages.append(type("Msg", (), {"role": MessageRole.ASSISTANT, "content": "Did your employer issue you a formal written termination or dismissal order, or was it verbal?"})())
+        add_user_message(state, "yes a formal letter was issued")
+
+        # OpenAI attempts to mark intake ready without knowing employer type:
+        openai_payload = {
+            "case": {"domain": "employment", "summary": "Wrongful termination in Bangalore with 3 lakhs dues"},
+            "jurisdiction": {"country": "India", "state": "Karnataka", "city": "Bangalore"},
+            "is_ready_for_qa": True,
+            "followup_question": None,
+            "synthesized_query": "The client, based in Bangalore, Karnataka, has been wrongfully terminated...",
+        }
+
+        with patch.object(
+            service._client.chat.completions,
+            "create",
+            new_callable=AsyncMock,
+            return_value=mock_openai_response(openai_payload),
+        ):
+            res = await service.analyze_turn(state, "yes a formal letter was issued")
+            assert not res.is_ready_for_qa, "Must NOT finalize intake without establishing private vs government employer type!"
+            assert res.followup_question is not None
+            assert any(w in res.followup_question.lower() for w in ["private", "government", "psu", "employer"])
+
+
 
