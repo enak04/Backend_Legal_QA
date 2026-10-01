@@ -121,7 +121,7 @@ Below is the detailed specification of all available endpoints. You can also vie
   ```
 
 * **Response Scenario A (More facts required):**
-  The AI determines that essential details (like the jurisdiction or employment type) are missing and generates a conversational follow-up question:
+  The engine determines that essential details (e.g. jurisdiction, employment contract type) are missing and generates a conversational follow-up question:
   ```json
   {
     "type": "follow_up",
@@ -133,7 +133,7 @@ Below is the detailed specification of all available endpoints. You can also vie
   ```
 
 * **Response Scenario B (Intake complete - Legal QA result):**
-  Once all required details are conversationally extracted, the engine synthesizes the facts and queries the `Legal_QA` service to obtain the legal remedies:
+  Once all required details are extracted or the mode is direct, the engine synthesizes the facts and queries the `Legal_QA` service to obtain the legal remedies:
   ```json
   {
     "type": "final_answer",
@@ -156,7 +156,31 @@ Below is the detailed specification of all available endpoints. You can also vie
 
 ---
 
-### 5. Get Full Conversation State
+### 5. Send Message with Streaming (Server-Sent Events)
+* **Endpoint:** `POST /api/conversations/{conversation_id}/messages/stream`
+* **Request Headers:** `Content-Type: application/json`
+* **Request Body:**
+  ```json
+  {
+    "message": "My boss hasn't paid my salary for 3 months."
+  }
+  ```
+* **Response Content-Type:** `text/event-stream`
+* **Description:** Streams response tokens and status events with low time-to-first-token.
+* **Stream Event Formats:**
+  ```
+  data: {"type": "status", "status": "analyzing"}
+
+  data: {"type": "token", "content": "Under the "}
+  data: {"type": "token", "content": "Payment of "}
+  data: {"type": "token", "content": "Wages Act... "}
+
+  data: {"type": "complete", "data": { "type": "final_answer", "conversation_id": "...", "answer": "...", "reasoning_chain": [...], "sources": [...] }}
+  ```
+
+---
+
+### 6. Get Full Conversation State
 * **Endpoint:** `GET /api/conversations/{conversation_id}`
 * **Description:** Retrieves the complete state of the conversation, including metadata, conversation history, cumulative extracted facts, and any QA results.
 * **Response (200 OK):**
@@ -187,7 +211,7 @@ Below is the detailed specification of all available endpoints. You can also vie
 
 ---
 
-### 6. Upload a Document Attachment
+### 7. Upload a Document Attachment
 * **Endpoint:** `POST /api/conversations/{conversation_id}/files`
 * **Request Content-Type:** `multipart/form-data`
 * **Form Parameters:**
@@ -205,10 +229,76 @@ Below is the detailed specification of all available endpoints. You can also vie
 
 ---
 
-### 7. Download/Retrieve a Document Attachment
+### 8. Download/Retrieve a Document Attachment
 * **Endpoint:** `GET /api/conversations/{conversation_id}/files/{file_id}`
 * **Description:** Downloads the raw binary of the uploaded file with original content-type and filename headers.
 * **Response:** Binary file stream.
+
+---
+
+## Frontend Integration Guide
+
+### 1. Typical Lifecycle in Frontend UI
+1. **Mode Selection Screen:**
+   - Call `GET /api/modes` to render mode choices (`Actionable`, `Informative`, `Readable`).
+2. **Conversation Initialization:**
+   - User selects a mode → Call `POST /api/conversations` with `{ "mode": "actionable" }`.
+   - Store `conversation_id` in React/Vue state or URL params.
+3. **Chat Interface:**
+   - User enters message → Call `POST /api/conversations/{conversation_id}/messages` (or `.../stream`).
+   - If response `type === "follow_up"`: Display the AI question in the chat and allow the user to reply.
+   - If response `type === "final_answer"`: Display the synthesized `answer`, render `reasoning_chain` (as step-by-step accordions/cards), and show `sources` (retrieved legal cases/sections).
+4. **File Attachments (Optional):**
+   - User attaches PDF/evidence → Call `POST /api/conversations/{conversation_id}/files` with `FormData`.
+5. **Session Resume / Reload:**
+   - Call `GET /api/conversations/{conversation_id}` to repopulate message history, extracted facts, and attachments.
+
+---
+
+### 2. TypeScript Data Types
+Copy these interfaces into your frontend project:
+
+```typescript
+export type LegalMode = "actionable" | "informative" | "readable";
+
+export interface ModeInfo {
+  id: LegalMode;
+  name: string;
+  description: string;
+}
+
+export interface ConversationCreated {
+  conversation_id: string;
+  mode: LegalMode;
+  stage: string;
+  created_at: string;
+}
+
+export interface FollowUpResponse {
+  type: "follow_up";
+  conversation_id: string;
+  mode: LegalMode;
+  message: string;
+  timestamp: string;
+}
+
+export interface LegalSource {
+  question: string;
+  answer: string;
+}
+
+export interface FinalAnswerResponse {
+  type: "final_answer";
+  conversation_id: string;
+  mode: LegalMode;
+  answer: string;
+  reasoning_chain: string[];
+  sources: LegalSource[];
+  timestamp: string;
+}
+
+export type ChatMessageResponse = FollowUpResponse | FinalAnswerResponse;
+```
 
 ---
 
@@ -221,7 +311,7 @@ All settings are loaded from environment variables (or `.env` file):
 | `LEGAL_QA_BASE_URL` | `http://localhost:8000` | Legal_QA service URL |
 | `LEGAL_QA_TIMEOUT` | `120` | Request timeout (seconds) |
 | `DATABASE_URL` | `sqlite:///./conversations.db` | Database URL. Supports SQLite (`sqlite:///...`) and MongoDB (`mongodb://...` or `mongodb+srv://...`) |
-| `CORS_ORIGINS` | `http://localhost:3000,http://localhost:5173` | Allowed CORS origins |
+| `CORS_ORIGINS` | `http://localhost:3000,http://localhost:5173` | Allowed CORS origins (Vite, React, Next.js) |
 | `APP_HOST` | `0.0.0.0` | Server bind host |
 | `APP_PORT` | `8080` | Server bind port |
 | `OPENAI_API_KEY` | `None` | OpenAI API key for conversational intake |
