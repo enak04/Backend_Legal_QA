@@ -14,16 +14,20 @@ Manages multi-turn conversations, collects relevant facts through an intake proc
 
 ```
 Frontend (Text / Voice Audio)
-    â†“
-Application Backend (:8080)        â†� this project
-  â”œâ”€â”€ Multilingual Engine (Indic Unicode + Transliteration Detection)
-  â”œâ”€â”€ Voice Service (IIT Madras Indic ASR + OpenAI Whisper)
-  â””â”€â”€ Conversational Intake & Grounded Generator
-    â†“ HTTP POST /predict
-Legal_QA Service (:8000)           â†� separate service
-    â†“
+    |
+    v
+Application Backend (:8080)        <- this project
+  ├── Multilingual Engine (Indic Unicode + Transliteration Detection)
+  ├── Voice Service (IIT Madras Indic ASR + OpenAI Whisper)
+  └── Conversational Intake & Grounded Generator
+    | HTTP POST /predict
+    v
+Legal_QA Service (:8000)           <- separate service
+    |
+    v
 HKG + PPO + DSSM + Reranking + GPT-4o
-    â†“
+    |
+    v
 Mode-specific legal response (in User's Selected/Spoken Language)
 ```
 
@@ -128,7 +132,7 @@ Below is the detailed specification of all available endpoints. You can also vie
 * **Request Body:**
   ```json
   {
-    "message": "à°®à°¾ à°¯à°œà°®à°¾à°¨à°¿ 3 à°¨à±†à°²à°²à±�à°—à°¾ à°œà±€à°¤à°‚ à°‡à°µà±�à°µà°²à±‡à°¦à±�.",
+    "message": "మా యజమాని 3 నెలలుగా జీతం ఇవ్వలేదు.",
     "language": "te"
   }
   ```
@@ -141,7 +145,7 @@ Below is the detailed specification of all available endpoints. You can also vie
     "type": "follow_up",
     "conversation_id": "9f3b128c74de",
     "mode": "actionable",
-    "message": "à°®à±€ à°¸à°®à°¸à±�à°¯ à°µà°¿à°šà°¾à°°à°•à°°à°‚. à°®à±€à°°à±� à°� à°­à°¾à°°à°¤à±€à°¯ à°°à°¾à°·à±�à°Ÿà±�à°°à°‚à°²à±‹ à°ªà°¨à°¿à°šà±‡à°¸à±�à°¤à±�à°¨à±�à°¨à°¾à°°à±�, à°®à°°à°¿à°¯à±� à°®à±€ à°•à°‚à°ªà±†à°¨à±€ à°ªà±�à°°à±ˆà°µà±‡à°Ÿà±� à°¸à°‚à°¸à±�à°¥à°¾ à°²à±‡à°• à°ªà±�à°°à°­à±�à°¤à±�à°µ à°µà°¿à°­à°¾à°—à°®à°¾?",
+    "message": "మీ సమస్య విచారకరం. మీరు ఏ భారతీయ రాష్ట్రంలో పనిచేస్తున్నారు, మరియు మీ కంపెనీ ప్రైవేట్ సంస్థా లేక ప్రభుత్వ విభాగమా?",
     "language": "te",
     "timestamp": "2026-08-30T04:10:02.000000+00:00"
   }
@@ -155,7 +159,7 @@ Below is the detailed specification of all available endpoints. You can also vie
     "conversation_id": "9f3b128c74de",
     "mode": "actionable",
     "language": "te",
-    "answer": "Payment of Wages Act, 1936 (à°µà±‡à°¤à°¨ à°šà±†à°²à±�à°²à°¿à°‚à°ªà±� à°šà°Ÿà±�à°Ÿà°‚) à°¸à±†à°•à±�à°·à°¨à±� 15 à°ªà±�à°°à°•à°¾à°°à°‚...",
+    "answer": "Payment of Wages Act, 1936 (వేతన చెల్లింపు చట్టం) సెక్షన్ 15 ప్రకారం...",
     "reasoning_chain": [
       "Step 1: Analyzed jurisdiction (Telangana / Andhra Pradesh)",
       "Step 2: Identified applicable labor legislation..."
@@ -264,7 +268,7 @@ Below is the detailed specification of all available endpoints. You can also vie
 * **Response (200 OK):**
   ```json
   {
-    "text": "à°¨à°¾à°•à±� à°®à±‚à°¡à±� à°¨à±†à°²à°²à±�à°—à°¾ à°œà±€à°¤à°‚ à°°à°¾à°²à±‡à°¦à±�, à°�à°®à°¿ à°šà±‡à°¯à°¾à°²à°¿?",
+    "text": "నాకు మూడు నెలలుగా జీతం రాలేదు, ఏమి చేయాలి?",
     "language": "te",
     "provider": "iitm",
     "filename": "query.wav"
@@ -288,9 +292,9 @@ Below is the detailed specification of all available endpoints. You can also vie
     "conversation_id": "9f3b128c74de",
     "mode": "actionable",
     "language": "te",
-    "transcription": "à°¨à°¾à°•à±� à°®à±‚à°¡à±� à°¨à±†à°²à°²à±�à°—à°¾ à°œà±€à°¤à°‚ à°°à°¾à°²à±‡à°¦à±�, à°�à°®à°¿ à°šà±‡à°¯à°¾à°²à°¿?",
+    "transcription": "నాకు మూడు నెలలుగా జీతం రాలేదు, ఏమి చేయాలి?",
     "transcription_provider": "iitm",
-    "message": "à°®à±€à°°à±� à°� à°­à°¾à°°à°¤à±€à°¯ à°°à°¾à°·à±�à°Ÿà±�à°°à°‚à°²à±‹ à°ªà°¨à°¿à°šà±‡à°¸à±�à°¤à±�à°¨à±�à°¨à°¾à°°à±�, à°®à°°à°¿à°¯à±� à°®à±€ à°•à°‚à°ªà±†à°¨à±€ à°ªà±�à°°à±ˆà°µà±‡à°Ÿà±� à°¸à°‚à°¸à±�à°¥à°¾ à°²à±‡à°• à°ªà±�à°°à°­à±�à°¤à±�à°µ à°µà°¿à°­à°¾à°—à°®à°¾?",
+    "message": "మీరు ఏ భారతీయ రాష్ట్రంలో పనిచేస్తున్నారు, మరియు మీ కంపెనీ ప్రైవేట్ సంస్థా లేక ప్రభుత్వ విభాగమా?",
     "timestamp": "2026-08-30T04:10:02.000000+00:00"
   }
   ```
@@ -307,7 +311,7 @@ Below is the detailed specification of all available endpoints. You can also vie
 - **English (`en`):** Standard English
 - **Code-Mixing & Transliteration:** Automatically recognizes Romanized transliterations (e.g. *"salary nahi mila"*, *"jeetham raledu"*).
 - **Dynamic Mid-Chat Switching:** A user can start in English, switch to Telugu on turn 2, and switch to Hindi on turn 3. The system matches the client's current language while retaining cross-turn legal facts.
-- **Dual-Track Statutory Grounding:** Acts and sections are referenced with both English legal naming and regional language explanations (e.g. *Payment of Wages Act, 1936 (à°µà±‡à°¤à°¨ à°šà±†à°²à±�à°²à°¿à°‚à°ªà±� à°šà°Ÿà±�à°Ÿà°‚)*).
+- **Dual-Track Statutory Grounding:** Acts and sections are referenced with both English legal naming and regional language explanations (e.g. *Payment of Wages Act, 1936 (వేతన చెల్లింపు చట్టం)*).
 
 ---
 
@@ -318,10 +322,10 @@ Below is the detailed specification of all available endpoints. You can also vie
    - Call `GET /api/modes` to render mode choices (`Actionable`, `Informative`, `Readable`).
    - (Optional) Provide language selector dropdown (`"en"`, `"te"`, `"hi"`, etc., or `"auto"`).
 2. **Conversation Initialization:**
-   - User selects mode â†’ Call `POST /api/conversations` with `{ "mode": "actionable", "language": "te" }`.
+   - User selects mode -> Call `POST /api/conversations` with `{ "mode": "actionable", "language": "te" }`.
    - Store `conversation_id` in frontend state.
 3. **Text Chat Interface:**
-   - User types message â†’ Call `POST /api/conversations/{conversation_id}/messages` (or `.../stream`).
+   - User types message -> Call `POST /api/conversations/{conversation_id}/messages` (or `.../stream`).
    - If response `type === "follow_up"`: Display the AI question in the chat and prompt the user for the next reply.
    - If response `type === "final_answer"`: Display `answer`, collapsible `reasoning_chain`, and citation `sources`.
 4. **Voice / Audio Input Interface:**
@@ -340,7 +344,7 @@ Below is the detailed specification of all available endpoints. You can also vie
      // data.message or data.answer contains AI advocate response
      ```
 5. **File Attachments (Optional):**
-   - User attaches PDF/evidence â†’ Call `POST /api/conversations/{conversation_id}/files` with `FormData`.
+   - User attaches PDF/evidence -> Call `POST /api/conversations/{conversation_id}/files` with `FormData`.
 6. **Session Resume / Reload:**
    - Call `GET /api/conversations/{conversation_id}` to repopulate message history, extracted facts, and attachments.
 
