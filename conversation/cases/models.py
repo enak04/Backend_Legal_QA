@@ -242,6 +242,7 @@ class UniversalCaseState(BaseModel):
     urgency: str = "normal"
     possible_alternatives: list[str] = Field(default_factory=list)
     related_case_types: list[str] = Field(default_factory=list)
+    language: str = "en"
     missing_information: list[str] = Field(default_factory=list)
     summary_confirmed: bool = False
 
@@ -253,6 +254,7 @@ class UniversalCaseState(BaseModel):
 
         return {
             "domain": self.case_domain or self.subcategory or self.primary_category,
+            "language": self.language,
             "issues": active_issues,
             "jurisdiction": {
                 "country": self.jurisdiction.country,
@@ -270,7 +272,7 @@ class UniversalCaseState(BaseModel):
             "evidence_count": len(self.evidence),
             "actions_already_taken": [a.action for a in self.actions_already_taken],
             "user_goal": self.user_goal,
-            "confidence": self.confidence.model_dump(),
+            "confidence": self.confidence.model_dump() if hasattr(self.confidence, "model_dump") else self.confidence,
         }
 
 

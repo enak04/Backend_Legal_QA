@@ -32,6 +32,7 @@ from conversation.state import (
     add_user_message,
     get_universal_case_state,
     resolve_user_correction,
+    set_language,
     set_legal_assessment,
     set_universal_case_state,
     store_legal_qa_result,
@@ -58,6 +59,12 @@ from legal_qa.grounded_generator import (
 from legal_qa.query_builder import QueryBuilder
 from legal_qa.research import LegalResearchLayer, legal_research_layer
 from services.intake_service import OpenAIIntakeService
+from services.language import (
+    detect_language,
+    is_indic_language,
+    normalize_language_code,
+    resolve_turn_language,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -90,11 +97,11 @@ class ConversationManager:
 
     # ── Public API ────────────────────────────────────────────
 
-    async def create_conversation(self, mode: Mode) -> ConversationRecord:
-        """Start a new conversation with the given mode."""
-        record = ConversationRecord(mode=mode)
+    async def create_conversation(self, mode: Mode, language: str = "en") -> ConversationRecord:
+        """Start a new conversation with the given mode and language."""
+        record = ConversationRecord(mode=mode, language=language)
         # Initialize universal case state
-        initial_state = UniversalCaseState()
+        initial_state = UniversalCaseState(language=language)
         set_universal_case_state(record, initial_state)
         return await self._repo.create(record)
 
@@ -105,7 +112,7 @@ class ConversationManager:
         return await self._repo.get(conversation_id)
 
     async def process_message(
-        self, conversation_id: str, user_message: str
+        self, conversation_id: str, user_message: str, language: str | None = None
     ) -> dict[str, Any]:
         """
         Process one user message through the general-purpose legal intake,
@@ -115,6 +122,15 @@ class ConversationManager:
         state = await self._repo.get(conversation_id)
         if state is None:
             raise ConversationNotFoundError(conversation_id)
+
+        # 1b. Update or detect language dynamically (supports switching languages mid-chat)
+        if language and language.lower() not in ("auto", "none"):
+            active_lang = normalize_language_code(language)
+            set_language(state, active_lang)
+        else:
+            resolved_lang = resolve_turn_language(user_message, current_lang=state.language or "en")
+            if resolved_lang != state.language:
+                set_language(state, resolved_lang)
 
         # 2. Check and resolve any user corrections / contradictions
         resolve_user_correction(state, user_message)
@@ -149,6 +165,7 @@ class ConversationManager:
                 "type": "follow_up",
                 "conversation_id": state.conversation_id,
                 "mode": state.mode.value,
+                "language": state.language,
                 "message": followup_question,
                 "case_state": state.facts.get("case_state"),
                 "timestamp": state.messages[-1].timestamp,
@@ -207,15 +224,28 @@ class ConversationManager:
             case_state=case_state,
             authorities=all_authorities,
         )
-        if qa_response.get("answer"):
-            direct_answer = qa_response["answer"]
-        elif intake_result.direct_legal_answer:
+        active_lang = state.language or "en"
+
+        if intake_result.direct_legal_answer:
             direct_answer = intake_result.direct_legal_answer
+        elif is_indic_language(active_lang) and self._answer_generator.is_configured:
+            raw_direct, gen_assessment = await self._answer_generator.generate_answer(
+                case_state=case_state,
+                authorities=all_authorities,
+                base_qa_answer=qa_response.get("answer"),
+                language=active_lang,
+            )
+            if gen_assessment:
+                legal_assessment = gen_assessment
+            direct_answer = raw_direct
+        elif qa_response.get("answer"):
+            direct_answer = qa_response["answer"]
         else:
             raw_direct, gen_assessment = await self._answer_generator.generate_answer(
                 case_state=case_state,
                 authorities=all_authorities,
                 base_qa_answer=None,
+                language=active_lang,
             )
             if gen_assessment:
                 legal_assessment = gen_assessment
@@ -262,6 +292,7 @@ class ConversationManager:
             "type": "final_answer",
             "conversation_id": state.conversation_id,
             "mode": state.mode.value,
+            "language": state.language,
             "answer": direct_answer,
             "case_state": state.facts.get("case_state"),
             "legal_assessment": state.facts.get("legal_assessment"),

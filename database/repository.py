@@ -251,15 +251,18 @@ class SQLiteConversationRepository(ConversationRepository):
 
     @staticmethod
     def _row_to_record(row: aiosqlite.Row, files_list: list[FileAttachment]) -> ConversationRecord:
+        facts_dict = json.loads(row["facts"])
+        lang = facts_dict.get("language", "en")
         return ConversationRecord(
             conversation_id=row["conversation_id"],
             mode=Mode(row["mode"]),
             stage=row["stage"],
-            facts=json.loads(row["facts"]),
+            facts=facts_dict,
             messages=json.loads(row["messages"]),
             last_assistant_question=row["last_assistant_question"],
             legal_qa_results=json.loads(row["legal_qa_results"]),
             files=files_list,
+            language=lang,
             created_at=row["created_at"],
             updated_at=row["updated_at"],
         )

@@ -17,6 +17,7 @@ from conversation.cases.models import (
     ActionTaken,
     EvidenceItem,
     FactItem,
+    Jurisdiction,
     LegalAssessment,
     UniversalCaseState,
 )
@@ -116,6 +117,23 @@ def get_universal_case_state(record: ConversationRecord) -> UniversalCaseState:
 def set_universal_case_state(record: ConversationRecord, case_state: UniversalCaseState) -> None:
     """Store typed UniversalCaseState inside record.facts."""
     record.facts["case_state"] = case_state.model_dump()
+    if getattr(case_state, "language", None):
+        record.facts["language"] = case_state.language
+        record.language = case_state.language
+
+
+def set_language(record: ConversationRecord, language: str) -> None:
+    """Set the conversation language across record and case state."""
+    record.language = language
+    record.facts["language"] = language
+    case_state = get_universal_case_state(record)
+    case_state.language = language
+    record.facts["case_state"] = case_state.model_dump()
+
+
+def get_language(record: ConversationRecord) -> str:
+    """Get the active language code for this conversation."""
+    return record.language or record.facts.get("language", "en")
 
 
 def get_legal_assessment(record: ConversationRecord) -> LegalAssessment | None:

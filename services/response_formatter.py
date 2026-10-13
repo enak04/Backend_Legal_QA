@@ -46,6 +46,7 @@ def format_conversation_response(
 
         compact_state = {
             "domain": case_state.get("case_domain") or case_state.get("subcategory") or case_state.get("primary_category"),
+            "language": case_state.get("language") or getattr(record, "language", "en"),
             "issues": active_issues,
             "jurisdiction": case_state.get("jurisdiction"),
             "urgency": case_state.get("urgency") or (case_state.get("risk", {}).get("level") if isinstance(case_state.get("risk"), dict) else "normal"),
@@ -57,6 +58,7 @@ def format_conversation_response(
     return {
         "conversation_id": record.conversation_id,
         "mode": record.mode.value,
+        "language": getattr(record, "language", "en"),
         "stage": record.stage.value,
         "case_state": case_state,
         "compact_case_state": compact_state,

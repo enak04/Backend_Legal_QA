@@ -129,6 +129,14 @@ Actionable legal remedies require domain-appropriate facts:
 ### 5. FACTS VS LEGAL HYPOTHESES:
 - Record client statements as known facts.
 - Spot legal claims and statutory hypotheses with confidence ratings.
+
+### 6. MULTILINGUAL INTAKE & CROSS-LINGUAL BRIDGE:
+- **Client Language Matching**: If the client communicates in Telugu, Hindi, Tamil, Kannada, Marathi, Bengali, Gujarati, Malayalam, or any other Indian language (in native script or transliterated Teluglish/Hinglish):
+  * Formulate your conversational response (`followup_question` or `direct_legal_answer`) in that EXACT language.
+  * Express legal empathy and ask clarifying questions naturally in their language.
+  * When providing `direct_legal_answer`, explain remedies in their language, keeping official Act names bilingual (e.g., Telugu/Hindi name + Official English Title in parentheses: "తెలంగాణ దుకాణాలు మరియు సంస్థల చట్టం, 1988 (Telangana Shops and Establishments Act, 1988) - సెక్షన్ 47").
+- **Canonical English Metadata**: All internal JSON output—such as `extracted_facts`, `case_state`, `jurisdiction`, `parties`, and `legal_issue` tags—MUST be in canonical ENGLISH so legal rules evaluate consistently.
+- **English Research Query**: When ready (`is_ready_for_qa = true`), formulate `synthesized_query` in formal, authoritative ENGLISH so Indian statutory databases and Legal_QA ML inference retrieve relevant sections and precedents accurately.
 """
 
 
@@ -304,9 +312,26 @@ class OpenAIIntakeService:
             for m in missing_facts if m.legal_importance == "HIGH"
         ]
 
+        # Multilingual detection
+        from services.language import detect_language, get_language_name, is_indic_language
+        active_lang = state.facts.get("language") or getattr(curr_ucs, "language", None) or getattr(state, "language", None)
+        if not active_lang or active_lang == "en":
+            detected_code = detect_language(latest_user_message)
+            if detected_code != "en":
+                active_lang = detected_code
+        if not active_lang:
+            active_lang = "en"
+
+        curr_ucs.language = active_lang
+        state.language = active_lang
+        state.facts["language"] = active_lang
+        lang_name = get_language_name(active_lang)
+
         user_prompt_content = {
             "mode": state.mode.value,
             "user_turn_number": user_turn_count,
+            "language": active_lang,
+            "language_name": lang_name,
             "existing_facts": {
                 k: v for k, v in state.facts.items() if k != "case_state"
             },
@@ -320,7 +345,10 @@ class OpenAIIntakeService:
                 "2. Ask ONE focused, natural question per turn. Keep it strictly relevant to the client's actual problem: NEVER ask about salary/dues in criminal, harassment, or personal injury cases; NEVER ask about marriage or children in student, exam, or dating breakup situations; and NEVER ask about government notices unless the client explicitly mentioned receiving one.\n"
                 "3. Streamlined Intake Efficiency (Max 2-3 Turns): Avoid prolonged back-and-forth or unnecessary interrogation. Once you understand: (a) Territorial Jurisdiction (State/City), (b) The specific grievance/facts, and (c) What legal relief the client is seeking, IMMEDIATELY set is_ready_for_qa = true so the client receives timely, actionable legal remedies.\n"
                 "4. If the user has already answered 1 or 2 clarifying questions (user_turn_number >= 2), or if the initial query was already detailed, set is_ready_for_qa = true immediately to provide solutions without stalling.\n"
-                "5. When ready, formulate a rich, detailed legal brief in synthesized_query summarizing Jurisdiction, Parties, Factual Chronology, and Specific Relief sought."
+                "5. When ready, formulate a rich, detailed legal brief in synthesized_query summarizing Jurisdiction, Parties, Factual Chronology, and Specific Relief sought in formal ENGLISH.\n"
+                f"6. Multilingual Consultation: The client's preferred language is {lang_name} ({active_lang}). "
+                "If this is a regional language, formulate any conversational response (followup_question or direct_legal_answer) "
+                f"naturally in {lang_name}. Always keep structured JSON keys, extracted facts, and synthesized_query strictly in canonical ENGLISH."
             ),
         }
 
@@ -396,8 +424,8 @@ Respond ONLY with a valid compact JSON object matching this structure:
     "amount": "string or null"
   },
   "is_ready_for_qa": boolean,
-  "followup_question": "string or null (If asking a follow-up, provide empathetic legal acknowledgment first, then ask ONE natural, focused question probing the specific facts)",
-  "direct_legal_answer": "string or null (MANDATORY if is_ready_for_qa is true: provide the complete, authoritative, second-person consultation guidance with Markdown sections: ### Understanding Your Situation, ### Your Legal Rights & Applicable Laws, ### What You Should Do Now, ### Important Timelines, ### Documents to Preserve, and ### A Word of Caution. Keep under 400 words.)"
+  "followup_question": "string or null (If asking a follow-up, provide empathetic legal acknowledgment first, then ask ONE natural, focused question probing the specific facts. If client used an Indian language like Telugu or Hindi, formulate this in that language!)",
+  "direct_legal_answer": "string or null (MANDATORY if is_ready_for_qa is true: provide the complete, authoritative, second-person consultation guidance with Markdown sections: ### Understanding Your Situation, ### Your Legal Rights & Applicable Laws, ### What You Should Do Now, ### Important Timelines, ### Documents to Preserve, and ### A Word of Caution. Keep under 400 words. If client used an Indian language like Telugu or Hindi, formulate this guidance in that language with bilingual Act names!)"
 }
 """
         )

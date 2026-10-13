@@ -92,6 +92,7 @@ class ConversationRecord(BaseModel):
     last_assistant_question: str | None = None
     legal_qa_results: list[LegalQAResult] = Field(default_factory=list)
     files: list[FileAttachment] = Field(default_factory=list)
+    language: str = "en"
     created_at: str = Field(
         default_factory=lambda: datetime.now(timezone.utc).isoformat()
     )

@@ -38,6 +38,10 @@ class CreateConversationRequest(BaseModel):
         ...,
         description="One of: actionable, informative, readable",
     )
+    language: str | None = Field(
+        default="en",
+        description="Optional initial language code (default 'en')",
+    )
 
 
 class SendMessageRequest(BaseModel):
@@ -45,6 +49,10 @@ class SendMessageRequest(BaseModel):
         ...,
         min_length=1,
         description="The user's message text",
+    )
+    language: str | None = Field(
+        default=None,
+        description="Optional language code (e.g. 'te', 'hi', 'ta', 'kn', 'en', 'auto')",
     )
 
 
@@ -67,11 +75,11 @@ async def create_conversation(
 
     **Request**::
 
-        { "mode": "actionable" }
+        { "mode": "actionable", "language": "en" }
 
     **Response**::
 
-        { "conversation_id": "...", "mode": "actionable" }
+        { "conversation_id": "...", "mode": "actionable", "language": "en" }
     """
     # Validate mode
     try:
@@ -86,11 +94,12 @@ async def create_conversation(
         )
 
     manager = _manager(request)
-    record = await manager.create_conversation(mode)
+    record = await manager.create_conversation(mode, language=body.language or "en")
 
     return {
         "conversation_id": record.conversation_id,
         "mode": record.mode.value,
+        "language": record.language,
         "stage": record.stage.value,
         "created_at": record.created_at,
     }
@@ -113,6 +122,7 @@ async def send_message(
         result = await manager.process_message(
             conversation_id=conversation_id,
             user_message=body.message,
+            language=body.language,
         )
     except ConversationNotFoundError:
         raise HTTPException(
@@ -173,6 +183,7 @@ async def send_message_stream(
             result = await manager.process_message(
                 conversation_id=conversation_id,
                 user_message=body.message,
+                language=body.language,
             )
 
             # Stream the conversational content in readable chunks

@@ -57,6 +57,13 @@ You are a senior Indian advocate providing clear, actionable, and empathetic leg
 - Do NOT include statutes that are irrelevant to the established facts.
 - Do NOT invent case numbers or nonexistent statutory sections.
 - Keep the entire consultation guidance under 450 words. Focus on clarity, precision, and practical next steps.
+
+### MULTILINGUAL GUIDANCE
+- If a Target Client Language is specified (e.g., Telugu, Hindi, Tamil, Kannada, Marathi, Bengali, Gujarati, etc.):
+  * Formulate the entire 6-part legal consultation guidance and action steps directly in that language.
+  * Explain legal rights and procedures simply and empathetically.
+  * Maintain official Indian statutory titles bilingually (e.g. native script followed by official English Act name in parentheses, such as "తెలంగాణ దుకాణాలు మరియు సంస్థల చట్టం, 1988 (Telangana Shops and Establishments Act, 1988) - సెక్షన్ 47" or "वेतन भुगतान अधिनियम (Payment of Wages Act)").
+  * If the client communicates in English, respond in English.
 """
 
 
@@ -88,6 +95,7 @@ class GroundedLegalAnswerGenerator:
         case_state: UniversalCaseState,
         authorities: list[RetrievedAuthority],
         base_qa_answer: str | None = None,
+        language: str | None = None,
     ) -> tuple[str, LegalAssessment]:
         """
         Synthesize a concise, lawyer-like legal answer via LLM and return
@@ -97,7 +105,7 @@ class GroundedLegalAnswerGenerator:
         assessment = self._build_assessment(case_state, authorities)
 
         # 2. Build the context message for the LLM
-        context = self._build_context_message(case_state, authorities, base_qa_answer)
+        context = self._build_context_message(case_state, authorities, base_qa_answer, language=language)
 
         # 3. Call LLM to generate natural answer
         if self.is_configured:
@@ -137,12 +145,25 @@ class GroundedLegalAnswerGenerator:
         state: UniversalCaseState,
         authorities: list[RetrievedAuthority],
         base_qa_answer: str | None = None,
+        language: str | None = None,
     ) -> str:
         """
         Build a structured context message that gives the LLM everything
         it needs to produce a grounded answer.
         """
         parts: list[str] = []
+
+        # Target language
+        lang = language or getattr(state, "language", None) or "en"
+        from services.language import get_language_name, is_indic_language
+        lang_name = get_language_name(lang)
+        if is_indic_language(lang):
+            parts.append(f"## TARGET CLIENT LANGUAGE: {lang_name} ({lang})")
+            parts.append(
+                f"IMPORTANT: The client communicates in {lang_name}. Synthesize the entire consultation "
+                f"guidance and action plan in clear, natural {lang_name}. Keep official statutory and act names "
+                f"bilingual (e.g. native script followed by official English Act name in parentheses)."
+            )
 
         # Client facts
         parts.append("## CLIENT FACTS")

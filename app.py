@@ -22,6 +22,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from api.routes.audio import router as audio_router
 from api.routes.conversations import router as conversations_router
 from api.routes.files import router as files_router
 from api.routes.health import router as health_router
@@ -155,6 +156,7 @@ app.include_router(health_router)
 app.include_router(modes_router)
 app.include_router(conversations_router)
 app.include_router(files_router)
+app.include_router(audio_router)
 
 
 # ── Direct run ────────────────────────────────────────────────
