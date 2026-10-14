@@ -111,6 +111,75 @@ class ConversationManager:
         """Load a conversation by ID."""
         return await self._repo.get(conversation_id)
 
+    async def list_conversations(
+        self,
+        limit: int = 50,
+        offset: int = 0,
+        search: str | None = None,
+        stage: str | None = None,
+        mode: str | None = None,
+    ) -> tuple[list[ConversationRecord], int]:
+        """List conversations with optional filtering, search, and pagination."""
+        return await self._repo.list_all(
+            limit=limit,
+            offset=offset,
+            search=search,
+            stage=stage,
+            mode=mode,
+        )
+
+    async def delete_conversation(self, conversation_id: str) -> bool:
+        """Delete a conversation by ID."""
+        return await self._repo.delete(conversation_id)
+
+    async def get_conversation_stats(self) -> dict[str, Any]:
+        """Aggregate statistics across all conversations till date."""
+        records, total_count = await self._repo.list_all(limit=10000, offset=0)
+        
+        total_messages = 0
+        user_messages = 0
+        assistant_messages = 0
+        by_stage: dict[str, int] = {}
+        by_mode: dict[str, int] = {}
+        languages: dict[str, int] = {}
+        file_count = 0
+
+        for r in records:
+            # Stage
+            stage_val = r.stage.value if hasattr(r.stage, "value") else str(r.stage)
+            by_stage[stage_val] = by_stage.get(stage_val, 0) + 1
+
+            # Mode
+            mode_val = r.mode.value if hasattr(r.mode, "value") else str(r.mode)
+            by_mode[mode_val] = by_mode.get(mode_val, 0) + 1
+
+            # Language
+            lang = r.language or "en"
+            languages[lang] = languages.get(lang, 0) + 1
+
+            # Messages
+            total_messages += len(r.messages)
+            for m in r.messages:
+                role = m.role.value if hasattr(m.role, "value") else str(m.role)
+                if role == "user":
+                    user_messages += 1
+                else:
+                    assistant_messages += 1
+
+            # Files
+            file_count += len(r.files)
+
+        return {
+            "total_conversations": total_count,
+            "total_messages": total_messages,
+            "user_messages": user_messages,
+            "assistant_messages": assistant_messages,
+            "total_files": file_count,
+            "by_stage": by_stage,
+            "by_mode": by_mode,
+            "languages": languages,
+        }
+
     async def process_message(
         self, conversation_id: str, user_message: str, language: str | None = None
     ) -> dict[str, Any]:

@@ -34,6 +34,12 @@ class Settings(BaseSettings):
     openai_api_key: str | None = None
     openai_model: str = "gpt-4o-mini"
 
+    # ── Admin Panel & Auth ────────────────────────────────────
+    admin_username: str = "admin"
+    admin_password: str = "admin123"
+    admin_secret_key: str = "legal-qa-admin-secret-key-change-in-production"
+    admin_session_expiry_hours: int = 24
+
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 
     @property

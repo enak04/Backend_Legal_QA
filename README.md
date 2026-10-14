@@ -435,7 +435,55 @@ All settings are loaded from environment variables (or `.env` file):
 | `APP_PORT` | `8080` | Server bind port |
 | `OPENAI_API_KEY` | `None` | OpenAI API key for conversational intake & Whisper ASR fallback |
 | `OPENAI_MODEL` | `gpt-4o-mini` | OpenAI Model for intake and synthesis |
+| `ADMIN_USERNAME` | `admin` | Admin dashboard and API username |
+| `ADMIN_PASSWORD` | `admin123` | Admin dashboard and API password |
+| `ADMIN_SECRET_KEY` | `legal-qa-...` | Secret key used to sign HMAC-SHA256 admin session tokens |
+| `ADMIN_SESSION_EXPIRY_HOURS` | `24` | Admin session token lifetime in hours |
 | `IITM_ASR_ENDPOINT` | `https://asr.iitm.ac.in/asr/v1/recognize/` | IIT Madras Indic Speech-to-Text API |
+
+---
+
+## Admin Portal & Conversation Monitor
+
+A built-in administrator portal and REST API allows administrators to monitor all conversations till date, view chronological message transcripts of user questions and system responses, filter by stage or mode, search by keyword, view extracted legal facts and precedents, and export transcripts.
+
+### Accessing the Web Dashboard
+Navigate to `http://localhost:8080/admin` in any browser:
+* **Default Username:** `admin`
+* **Default Password:** `admin123` (configured via `ADMIN_PASSWORD` in `.env`)
+
+### Features
+* **Authentication:** Secure token-based session with HTTP-only cookies and Bearer token support.
+* **Aggregated Analytics:** Live stats for total consultations, total messages, user inquiries, and system answers.
+* **Search & Filters:** Real-time search across conversation IDs, user messages, and extracted facts, plus mode and stage filters.
+* **Chat Inspector:** View complete chronological timeline with distinct User vs. System message bubbles, timestamps, extracted facts, and Legal QA precedents.
+* **Exporting:** Download chat transcripts in JSON or formatted Markdown / plain text.
+
+### Admin API Endpoints
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `POST` | `/api/admin/login` | Authenticate with `{ "username": "admin", "password": "..." }` |
+| `POST` | `/api/admin/logout` | Invalidate admin cookie session |
+| `GET` | `/api/admin/me` | Check session validity |
+| `GET` | `/api/admin/stats` | System overview stats across all chats till date |
+| `GET` | `/api/admin/conversations` | List all chats with pagination, search, mode/stage filters |
+| `GET` | `/api/admin/conversations/{id}` | Full chat transcript with all user and system messages |
+| `DELETE` | `/api/admin/conversations/{id}` | Delete a conversation and its attached files |
+| `GET` | `/api/admin/conversations/{id}/export?format=json\|markdown\|txt` | Export conversation transcript |
+
+### Setting Admin Credentials in Production & Hosting
+
+When deploying to production or hosting providers (e.g. Render, Railway, Docker, AWS, Heroku, Cloud Run), configure the credentials in the provider's Environment Variables settings:
+
+```env
+ADMIN_USERNAME=admin
+ADMIN_PASSWORD=your_strong_production_password
+ADMIN_SECRET_KEY=generate_a_random_32_character_secret_key
+ADMIN_SESSION_EXPIRY_HOURS=24
+```
+
+Once deployed, visit `https://<your-domain>/admin` to sign in.
 
 ## Project Structure
 
@@ -444,6 +492,7 @@ Backend_Legal_QA/
 ├── app.py                    # FastAPI application & startup
 ├── config.py                 # Environment configuration
 ├── api/routes/
+│   ├── admin.py              # Admin login, analytics, & conversation monitor routes
 │   ├── conversations.py      # Conversation text & stream endpoints
 │   ├── audio.py              # Audio transcription & voice consultation endpoints
 │   ├── files.py              # File attachment upload/download routes
@@ -462,11 +511,13 @@ Backend_Legal_QA/
 │   ├── models.py             # Data models (Pydantic) with language field
 │   └── repository.py         # Storage abstraction + SQLite & MongoDB impls
 ├── services/
+│   ├── admin_auth.py         # Admin authentication, JWT signing & verification
 │   ├── intake_service.py     # OpenAI conversational intake & domain scoping
 │   ├── language.py           # Indic Unicode & transliteration language detector
 │   ├── voice_service.py      # Speech-to-text (IIT Madras Indic ASR + Whisper)
 │   └── response_formatter.py # Response formatting
-└── tests/                    # Comprehensive test suite (127 tests passing)
+└── tests/                    # Comprehensive test suite (140 tests passing)
+    ├── test_admin.py         # Admin authentication, conversation browsing & export
     ├── test_audio.py         # Voice transcription & audio endpoints tests
     └── test_multilingual.py  # Language detection & dynamic switching tests
 ```

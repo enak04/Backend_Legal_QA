@@ -12,6 +12,7 @@ import json
 from abc import ABC, abstractmethod
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 import aiosqlite
 
@@ -42,6 +43,17 @@ class ConversationRepository(ABC):
     @abstractmethod
     async def delete(self, conversation_id: str) -> bool:
         """Delete a conversation.  Returns ``True`` if it existed."""
+
+    @abstractmethod
+    async def list_all(
+        self,
+        limit: int = 50,
+        offset: int = 0,
+        search: str | None = None,
+        stage: str | None = None,
+        mode: str | None = None,
+    ) -> tuple[list[ConversationRecord], int]:
+        """Return a page of conversation records and the total count."""
 
     @abstractmethod
     async def save_file(
@@ -203,6 +215,72 @@ class SQLiteConversationRepository(ConversationRepository):
             )
             await db.commit()
             return cursor.rowcount > 0
+
+    async def list_all(
+        self,
+        limit: int = 50,
+        offset: int = 0,
+        search: str | None = None,
+        stage: str | None = None,
+        mode: str | None = None,
+    ) -> tuple[list[ConversationRecord], int]:
+        where_clauses: list[str] = []
+        params: list[Any] = []
+
+        if stage:
+            where_clauses.append("stage = ?")
+            params.append(stage)
+        if mode:
+            where_clauses.append("mode = ?")
+            params.append(mode)
+        if search:
+            search_param = f"%{search}%"
+            where_clauses.append("(conversation_id LIKE ? OR messages LIKE ? OR facts LIKE ?)")
+            params.extend([search_param, search_param, search_param])
+
+        where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+
+        async with aiosqlite.connect(self._db_path) as db:
+            db.row_factory = aiosqlite.Row
+
+            count_query = f"SELECT count(*) as total FROM conversations {where_sql}"
+            count_cursor = await db.execute(count_query, params)
+            count_row = await count_cursor.fetchone()
+            total = count_row["total"] if count_row else 0
+
+            list_query = f"SELECT * FROM conversations {where_sql} ORDER BY updated_at DESC LIMIT ? OFFSET ?"
+            list_params = params + [limit, offset]
+            cursor = await db.execute(list_query, list_params)
+            rows = await cursor.fetchall()
+
+            if not rows:
+                return [], total
+
+            conv_ids = [r["conversation_id"] for r in rows]
+            placeholders = ",".join("?" for _ in conv_ids)
+            files_map: dict[str, list[FileAttachment]] = {cid: [] for cid in conv_ids}
+
+            file_cursor = await db.execute(
+                f"SELECT file_id, conversation_id, filename, content_type, length(content) as size_bytes, uploaded_at FROM files WHERE conversation_id IN ({placeholders})",
+                conv_ids,
+            )
+            file_rows = await file_cursor.fetchall()
+            for fr in file_rows:
+                files_map[fr["conversation_id"]].append(
+                    FileAttachment(
+                        file_id=fr["file_id"],
+                        filename=fr["filename"],
+                        content_type=fr["content_type"],
+                        size_bytes=fr["size_bytes"],
+                        uploaded_at=fr["uploaded_at"],
+                    )
+                )
+
+            records = [
+                self._row_to_record(row, files_map.get(row["conversation_id"], []))
+                for row in rows
+            ]
+            return records, total
 
     # ── File-specific Storage ─────────────────────────────────
 
@@ -369,4 +447,43 @@ class MongoDBConversationRepository(ConversationRepository):
             "content_type": doc["content_type"],
             "content": bytes(doc["content"]),
         }
+
+    async def list_all(
+        self,
+        limit: int = 50,
+        offset: int = 0,
+        search: str | None = None,
+        stage: str | None = None,
+        mode: str | None = None,
+    ) -> tuple[list[ConversationRecord], int]:
+        import asyncio
+        import re
+        query: dict[str, Any] = {}
+        if stage:
+            query["stage"] = stage
+        if mode:
+            query["mode"] = mode
+        if search:
+            regex = re.compile(re.escape(search), re.IGNORECASE)
+            query["$or"] = [
+                {"conversation_id": regex},
+                {"messages.content": regex},
+                {"language": regex},
+            ]
+
+        for attempt in range(3):
+            try:
+                total = await self._col.count_documents(query)
+                cursor = self._col.find(query).sort("updated_at", -1).skip(offset).limit(limit)
+                docs = await cursor.to_list(length=limit)
+                records = []
+                for d in docs:
+                    d.pop("_id", None)
+                    records.append(ConversationRecord(**d))
+                return records, total
+            except Exception:
+                if attempt == 2:
+                    raise
+                await asyncio.sleep(0.5 * (attempt + 1))
+        return [], 0
 

@@ -113,3 +113,31 @@ class TestMongoDBConversationRepository:
         assert file_doc is not None
         assert file_doc["filename"] == "doc.txt"
         assert file_doc["content"] == file_content
+
+    @pytest.mark.asyncio
+    async def test_list_all(self, mock_motor_client):
+        repo = MongoDBConversationRepository("mongodb://localhost:27017")
+        repo._col.count_documents = AsyncMock(return_value=1)
+        
+        mock_cursor = MagicMock()
+        mock_cursor.sort.return_value = mock_cursor
+        mock_cursor.skip.return_value = mock_cursor
+        mock_cursor.limit.return_value = mock_cursor
+        mock_cursor.to_list = AsyncMock(return_value=[{
+            "conversation_id": "conv123",
+            "mode": "actionable",
+            "stage": "initial",
+            "facts": {},
+            "messages": [],
+            "last_assistant_question": None,
+            "legal_qa_results": [],
+            "files": [],
+            "created_at": "2026-08-30T04:10:00Z",
+            "updated_at": "2026-08-30T04:10:00Z",
+        }])
+        repo._col.find = MagicMock(return_value=mock_cursor)
+
+        records, total = await repo.list_all(limit=10, offset=0)
+        assert total == 1
+        assert len(records) == 1
+        assert records[0].conversation_id == "conv123"
