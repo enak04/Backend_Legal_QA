@@ -52,7 +52,13 @@ class LegalQAClient:
     """
 
     def __init__(self, base_url: str, timeout: int = 120) -> None:
-        self._base_url = base_url.rstrip("/")
+        raw_url = (base_url or "").strip()
+        if raw_url and not raw_url.startswith(("http://", "https://")):
+            if raw_url.startswith(("localhost", "127.0.0.1")):
+                raw_url = f"http://{raw_url}"
+            else:
+                raw_url = f"https://{raw_url}"
+        self._base_url = raw_url.rstrip("/")
         self._timeout = timeout
 
     async def predict(self, question: str, mode: str) -> dict[str, Any]:
@@ -81,10 +87,16 @@ class LegalQAClient:
         LegalQABadResponseError
             Legal_QA returned an error or malformed JSON.
         """
+        if not self._base_url:
+            logger.error("Legal_QA base_url is empty or unconfigured.")
+            raise LegalQAUnavailableError(
+                "Legal_QA service URL is not configured. Set LEGAL_QA_BASE_URL (e.g. http://localhost:8000 or https://your-service.onrender.com) in your environment variables."
+            )
+
         payload = {"question": question, "mode": mode}
         url = f"{self._base_url}/predict"
 
-        logger.info("Legal_QA request → %s  mode=%s", url, mode)
+        logger.info("Legal_QA request -> %s  mode=%s", url, mode)
 
         try:
             async with httpx.AsyncClient(
