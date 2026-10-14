@@ -45,6 +45,21 @@ IITM_LANGUAGE_MAP: dict[str, str] = {
 }
 
 
+# OpenAI Whisper official ISO-639-1 supported language codes for the explicit `language` parameter.
+# Languages omitted here (e.g. Telugu 'te', Odia 'or') are transcribed via Whisper auto-detection
+# instead of an explicit parameter, which avoids OpenAI 400 'Language is not supported' errors.
+WHISPER_SUPPORTED_LANGUAGES: set[str] = {
+    "af", "am", "ar", "as", "az", "ba", "be", "bg", "bn", "bo", "br", "bs", "ca",
+    "cs", "cy", "da", "de", "el", "en", "es", "et", "eu", "fa", "fi", "fo", "fr",
+    "gl", "gu", "ha", "haw", "he", "hi", "hr", "ht", "hu", "hy", "id", "is", "it",
+    "ja", "jw", "ka", "kk", "km", "kn", "ko", "la", "lb", "ln", "lo", "lt", "lv",
+    "mg", "mi", "mk", "ml", "mn", "mr", "ms", "mt", "my", "ne", "nl", "nn", "no",
+    "oc", "pa", "pl", "ps", "pt", "ro", "ru", "sa", "sd", "si", "sk", "sl", "sn",
+    "so", "sq", "sr", "su", "sv", "sw", "ta", "th", "tk", "tl", "tr", "tt", "uk",
+    "ur", "uz", "vi", "yi", "yo", "zh", "yue",
+}
+
+
 class VoiceService:
     """Manages audio transcription with Indic ASR and Whisper fallback."""
 
@@ -109,14 +124,33 @@ class VoiceService:
         audio_file = io.BytesIO(audio_bytes)
         audio_file.name = filename or "audio.wav"
 
-        lang_code = language if language and language != "auto" else None
+        # Check if requested language code is formally supported by Whisper's language parameter
+        lang_code = language.lower() if language and language != "auto" else None
+        whisper_lang = lang_code if (lang_code and lang_code in WHISPER_SUPPORTED_LANGUAGES) else None
 
-        transcription = await self._openai_client.audio.transcriptions.create(
-            model="whisper-1",
-            file=audio_file,
-            language=lang_code,
-        )
-        return transcription.text.strip()
+        kwargs: dict[str, Any] = {
+            "model": "whisper-1",
+            "file": audio_file,
+        }
+        if whisper_lang:
+            kwargs["language"] = whisper_lang
+
+        try:
+            transcription = await self._openai_client.audio.transcriptions.create(**kwargs)
+            return transcription.text.strip()
+        except Exception as exc:
+            # If OpenAI rejected the language code with 400 unsupported_language, retry with auto-detection
+            if "language" in str(exc).lower() and "language" in kwargs:
+                logger.warning(
+                    "Whisper rejected language parameter '%s' (%s); retrying with auto-detection.",
+                    whisper_lang,
+                    exc,
+                )
+                audio_file.seek(0)
+                kwargs.pop("language", None)
+                transcription = await self._openai_client.audio.transcriptions.create(**kwargs)
+                return transcription.text.strip()
+            raise
 
     async def transcribe_audio(
         self,

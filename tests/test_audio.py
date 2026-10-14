@@ -48,9 +48,29 @@ class TestVoiceService:
                 language="hi",
                 preferred_provider="iitm",
             )
-            assert res["text"] == "मेरे नियोक्ता ने मुझे निकाल दिया"
-            assert res["language"] == "hi"
+    async def test_transcribe_audio_telugu_whisper_fallback_omits_unsupported_language(self):
+        mock_openai = AsyncMock()
+        mock_transcription = MagicMock()
+        mock_transcription.text = "నా యజమాని నన్ను తొలగించారు"
+        mock_openai.audio.transcriptions.create.return_value = mock_transcription
+
+        service = VoiceService(openai_client=mock_openai)
+        fake_audio = b"RIFF....WAVE"
+
+        with patch.object(service, "transcribe_with_iitm", side_effect=Exception("IITM 404")):
+            res = await service.transcribe_audio(
+                fake_audio,
+                filename="test.wav",
+                language="te",
+                preferred_provider="iitm",
+            )
+            assert res["text"] == "నా యజమాని నన్ను తొలగించారు"
+            assert res["language"] == "te"
             assert res["provider"] == "whisper"
+
+            # Verify that language="te" was NOT passed to Whisper API to avoid 400 error
+            call_kwargs = mock_openai.audio.transcriptions.create.call_args.kwargs
+            assert "language" not in call_kwargs
 
 
 @pytest.mark.asyncio
