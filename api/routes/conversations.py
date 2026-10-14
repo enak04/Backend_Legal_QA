@@ -94,7 +94,9 @@ async def create_conversation(
         )
 
     manager = _manager(request)
+    logger.info("Creating conversation [mode=%s, language=%s]", mode.value, body.language or "en")
     record = await manager.create_conversation(mode, language=body.language or "en")
+    logger.info("Created conversation %s [mode=%s]", record.conversation_id, record.mode.value)
 
     return {
         "conversation_id": record.conversation_id,
@@ -117,12 +119,23 @@ async def send_message(
     Returns either a follow-up question or a final Legal_QA answer.
     """
     manager = _manager(request)
+    logger.info(
+        "Processing message for conversation %s [msg_len=%d, language=%s]",
+        conversation_id,
+        len(body.message),
+        body.language,
+    )
 
     try:
         result = await manager.process_message(
             conversation_id=conversation_id,
             user_message=body.message,
             language=body.language,
+        )
+        logger.info(
+            "Processed message for %s -> stage: %s",
+            conversation_id,
+            result.get("stage", "unknown"),
         )
     except ConversationNotFoundError:
         raise HTTPException(

@@ -24,7 +24,7 @@ class Settings(BaseSettings):
     database_url: str = "sqlite:///./conversations.db"
 
     # ── CORS ──────────────────────────────────────────────────
-    cors_origins: str = "http://localhost:3000,http://localhost:5173"
+    cors_origins: str = "*"
 
     # ── Server ────────────────────────────────────────────────
     app_host: str = "0.0.0.0"
@@ -45,6 +45,8 @@ class Settings(BaseSettings):
     @property
     def cors_origin_list(self) -> list[str]:
         """Parse comma-separated CORS origins into a list."""
+        if not self.cors_origins or self.cors_origins.strip() == "*":
+            return ["*"]
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
 
 

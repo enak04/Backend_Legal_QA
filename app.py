@@ -17,10 +17,39 @@ Run with::
 from __future__ import annotations
 
 import logging
+import sys
+import time
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+
+# Ensure unbuffered / line-buffered stdout and stderr so logs appear immediately on Render / Docker
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(line_buffering=True, encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+if hasattr(sys.stderr, "reconfigure"):
+    try:
+        sys.stderr.reconfigure(line_buffering=True, encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
+# ── Logging ───────────────────────────────────────────────────
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s  %(levelname)-8s  %(name)s  %(message)s",
+    handlers=[logging.StreamHandler(sys.stdout)],
+    force=True,
+)
+logger = logging.getLogger(__name__)
+
+# Ensure uvicorn access & error logs are captured
+logging.getLogger("uvicorn").setLevel(logging.INFO)
+logging.getLogger("uvicorn.access").setLevel(logging.INFO)
+logging.getLogger("uvicorn.error").setLevel(logging.INFO)
 
 from api.routes.admin import router as admin_router
 from api.routes.audio import router as audio_router
@@ -54,7 +83,7 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     """Initialise resources on startup, clean up on shutdown."""
     # ── Startup ───────────────────────────────────────────────
-    logger.info("Starting Application Backend …")
+    logger.info("Starting Application Backend ...")
 
     # Database
     db_url = settings.database_url
@@ -73,7 +102,7 @@ async def lifespan(app: FastAPI):
         timeout=settings.legal_qa_timeout,
     )
     logger.info(
-        "Legal_QA client configured → %s (timeout=%ds)",
+        "Legal_QA client configured -> %s (timeout=%ds)",
         settings.legal_qa_base_url,
         settings.legal_qa_timeout,
     )
@@ -125,7 +154,7 @@ async def lifespan(app: FastAPI):
     yield
 
     # ── Shutdown ──────────────────────────────────────────────
-    logger.info("Shutting down Application Backend …")
+    logger.info("Shutting down Application Backend ...")
 
 
 # ── FastAPI app ───────────────────────────────────────────────
@@ -150,6 +179,65 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# ── Request / Response Logging Middleware ──────────────────────
+
+@app.middleware("http")
+async def log_requests_middleware(request: Request, call_next):
+    """Log all incoming HTTP requests and outgoing responses with timing, status, IP, and origin."""
+    start_time = time.perf_counter()
+    client_ip = (
+        request.headers.get("x-forwarded-for", "").split(",")[0].strip()
+        or (request.client.host if request.client else "unknown")
+    )
+    origin = request.headers.get("origin") or request.headers.get("referer") or "-"
+    method = request.method
+    path = request.url.path
+    query = f"?{request.url.query}" if request.url.query else ""
+
+    logger.info(
+        "--> [HTTP IN]  %s %s%s | IP: %s | Origin: %s",
+        method,
+        path,
+        query,
+        client_ip,
+        origin,
+    )
+
+    try:
+        response = await call_next(request)
+        duration_ms = (time.perf_counter() - start_time) * 1000
+
+        # Log warning if a CORS preflight is rejected
+        if method == "OPTIONS" and response.status_code == 400:
+            logger.warning(
+                "[CORS REJECTED] Preflight OPTIONS %s from Origin '%s' was rejected! Allowed origins: %s. Set CORS_ORIGINS=* in environment variables.",
+                path,
+                origin,
+                settings.cors_origin_list,
+            )
+
+        logger.info(
+            "<-- [HTTP OUT] %s %s%s -> %d | %.2fms",
+            method,
+            path,
+            query,
+            response.status_code,
+            duration_ms,
+        )
+        return response
+    except Exception as exc:
+        duration_ms = (time.perf_counter() - start_time) * 1000
+        logger.exception(
+            "<-- [HTTP ERR] %s %s%s failed with exception: %s | %.2fms",
+            method,
+            path,
+            query,
+            exc,
+            duration_ms,
+        )
+        raise
 
 # ── Routes ────────────────────────────────────────────────────
 
