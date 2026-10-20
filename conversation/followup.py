@@ -27,7 +27,12 @@ from conversation.cases.models import (
     Risk,
     UniversalCaseState,
 )
-from database.models import ConversationRecord, MessageRole, Mode
+from database.models import (
+    ConversationRecord,
+    ConversationStage,
+    MessageRole,
+    Mode,
+)
 from services.risk_engine import risk_engine
 
 
@@ -605,6 +610,10 @@ class FollowUpEngine:
         """
         # In Readable or Informative modes, answer immediately
         if record.mode in (Mode.READABLE, Mode.INFORMATIVE):
+            return True
+
+        # If initial advice was already delivered, continuous consultation is active
+        if record.stage == ConversationStage.ANSWERED or len(record.legal_qa_results) > 0:
             return True
 
         # Check if user explicitly asked to skip questions or give advice now

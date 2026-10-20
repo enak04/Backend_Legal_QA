@@ -236,11 +236,44 @@ class ConversationManager:
                 "mode": state.mode.value,
                 "language": state.language,
                 "message": followup_question,
+                "answer": followup_question,
                 "case_state": state.facts.get("case_state"),
                 "timestamp": state.messages[-1].timestamp,
             }
 
-        # 7. Sufficient info gathered → Legal Research & Retrieval
+        # 7. Check if this is an ongoing conversational follow-up turn after initial advice
+        has_prior_answers = bool(state.legal_qa_results or state.stage == ConversationStage.ANSWERED)
+        if has_prior_answers and intake_result.direct_legal_answer:
+            direct_answer = intake_result.direct_legal_answer
+            statutory_authorities = self._research.research_authorities(case_state)
+            result = LegalQAResult(
+                question=user_message,
+                answer=direct_answer,
+                reasoning_chain=[],
+                retrieved_cases=[],
+            )
+            store_legal_qa_result(state, result)
+            add_assistant_message(state, direct_answer)
+            state.last_assistant_question = None
+            state.stage = ConversationStage.ANSWERED
+            await self._repo.update(state)
+
+            return {
+                "type": "final_answer",
+                "conversation_id": state.conversation_id,
+                "mode": state.mode.value,
+                "language": state.language,
+                "answer": direct_answer,
+                "message": direct_answer,
+                "case_state": state.facts.get("case_state"),
+                "legal_assessment": state.facts.get("legal_assessment"),
+                "reasoning_chain": [],
+                "sources": [],
+                "authorities": [auth.model_dump() for auth in statutory_authorities],
+                "timestamp": state.messages[-1].timestamp,
+            }
+
+        # 8. Initial Advice Turn: Research & Precedent Retrieval
         constructed_question = (
             intake_result.synthesized_query
             or self._query_builder.build(state)
@@ -363,6 +396,7 @@ class ConversationManager:
             "mode": state.mode.value,
             "language": state.language,
             "answer": direct_answer,
+            "message": direct_answer,
             "case_state": state.facts.get("case_state"),
             "legal_assessment": state.facts.get("legal_assessment"),
             "reasoning_chain": result.reasoning_chain,

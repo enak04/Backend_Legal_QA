@@ -326,8 +326,9 @@ Below is the detailed specification of all available endpoints. You can also vie
    - Store `conversation_id` in frontend state.
 3. **Text Chat Interface:**
    - User types message -> Call `POST /api/conversations/{conversation_id}/messages` (or `.../stream`).
-   - If response `type === "follow_up"`: Display the AI question in the chat and prompt the user for the next reply.
+   - If response `type === "follow_up"`: Display the AI advocate's conversational response/clarification in the chat.
    - If response `type === "final_answer"`: Display `answer`, collapsible `reasoning_chain`, and citation `sources`.
+   - **Continuous Multi-Turn Dialogue:** The session never shuts down after an answer. Users can continue asking follow-up questions, discuss specific points or drafting, explore "what-if" scenarios, or raise new legal queries naturally like in ChatGPT.
 4. **Voice / Audio Input Interface:**
    - User taps Microphone icon to record audio via browser `MediaRecorder` API:
      ```javascript

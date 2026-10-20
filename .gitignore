@@ -34,6 +34,5 @@ Datasets/
 eval_results/
 run_conversation_eval.py
 auto_optimize_eval.py
-interactive_chat.py
 learned_*
 

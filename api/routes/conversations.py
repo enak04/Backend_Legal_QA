@@ -45,15 +45,22 @@ class CreateConversationRequest(BaseModel):
 
 
 class SendMessageRequest(BaseModel):
-    message: str = Field(
-        ...,
-        min_length=1,
+    message: str | None = Field(
+        default=None,
         description="The user's message text",
+    )
+    content: str | None = Field(
+        default=None,
+        description="Alternative field for message text (for chat client compatibility)",
     )
     language: str | None = Field(
         default=None,
         description="Optional language code (e.g. 'te', 'hi', 'ta', 'kn', 'en', 'auto')",
     )
+
+    @property
+    def text(self) -> str:
+        return (self.message or self.content or "").strip()
 
 
 # ── Helper to get the manager from app state ─────────────────
@@ -118,18 +125,25 @@ async def send_message(
 
     Returns either a follow-up question or a final Legal_QA answer.
     """
+    user_text = body.text
+    if not user_text:
+        raise HTTPException(
+            status_code=422,
+            detail="Field 'message' or 'content' is required and cannot be empty.",
+        )
+
     manager = _manager(request)
     logger.info(
         "Processing message for conversation %s [msg_len=%d, language=%s]",
         conversation_id,
-        len(body.message),
+        len(user_text),
         body.language,
     )
 
     try:
         result = await manager.process_message(
             conversation_id=conversation_id,
-            user_message=body.message,
+            user_message=user_text,
             language=body.language,
         )
         logger.info(
@@ -193,9 +207,14 @@ async def send_message_stream(
             # Yield initial status immediately (<200ms)
             yield f"data: {json.dumps({'type': 'status', 'status': 'analyzing'})}\n\n"
 
+            user_text = body.text
+            if not user_text:
+                yield f"data: {json.dumps({'type': 'error', 'detail': 'Message content cannot be empty.'})}\n\n"
+                return
+
             result = await manager.process_message(
                 conversation_id=conversation_id,
-                user_message=body.message,
+                user_message=user_text,
                 language=body.language,
             )
 

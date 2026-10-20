@@ -409,3 +409,49 @@ class TestMultiTurnConversation:
             m for m in conv["messages"] if m["role"] == "user"
         ]
         assert len(user_msgs) >= 2  # at least 2 user messages
+
+    async def test_post_prediction_followup_queries_remain_open(self, test_client):
+        """After receiving a final answer, conversation remains open for follow-up queries."""
+        resp = await test_client.post(
+            "/api/conversations", json={"mode": "actionable"}
+        )
+        cid = resp.json()["conversation_id"]
+
+        # Initial turn
+        await test_client.post(
+            f"/api/conversations/{cid}/messages",
+            json={"message": "Unpaid salary in Bangalore Karnataka at a private tech firm."},
+        )
+        # Follow-up answering turn giving final answer
+        ans_turn = await test_client.post(
+            f"/api/conversations/{cid}/messages",
+            json={"message": "Dues are for 3 months, amount is 2 lakhs."},
+        )
+        data = ans_turn.json()
+        assert data["type"] == "final_answer"
+        assert "answer" in data
+
+        # Client asks follow-up query after prediction
+        followup_msg = await test_client.post(
+            f"/api/conversations/{cid}/messages",
+            json={"message": "How do I draft the legal notice, and what timeline should I give?"},
+        )
+        assert followup_msg.status_code == 200
+        followup_data = followup_msg.json()
+        assert followup_data["type"] == "final_answer"
+        assert followup_data.get("answer") or followup_data.get("message")
+
+        # Client asks another query
+        fee_msg = await test_client.post(
+            f"/api/conversations/{cid}/messages",
+            json={"content": "What are the court fees if I have to file a claim?"},
+        )
+        assert fee_msg.status_code == 200
+        fee_data = fee_msg.json()
+        assert fee_data.get("answer") or fee_data.get("message")
+
+        # Verify full message history is retained
+        get_resp = await test_client.get(f"/api/conversations/{cid}")
+        conv = get_resp.json()
+        assert len(conv["messages"]) >= 8  # multiple user and assistant turns
+        assert conv["stage"] == "answered"

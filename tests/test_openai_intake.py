@@ -501,6 +501,63 @@ class TestDeclarativeDomainIntake:
             assert not res.is_ready_for_qa, "Cybercrime intake must not close without financial loss or reporting details!"
             assert res.followup_question is not None
 
+    @pytest.mark.asyncio
+    async def test_post_advice_continuous_followup_turn(self, mock_openai_response):
+        """When initial advice was already delivered, subsequent queries receive direct conversational answers."""
+        service = OpenAIIntakeService(api_key="sk-test-key")
+        state = ConversationRecord(mode=Mode.ACTIONABLE)
+        add_user_message(state, "Unpaid salary in Bangalore")
+        from database.models import ConversationStage, LegalQAResult
+        state.stage = ConversationStage.ANSWERED
+        state.legal_qa_results.append(
+            LegalQAResult(question="Unpaid salary", answer="Initial advice...", reasoning_chain=[], retrieved_cases=[])
+        )
+
+        openai_payload = {
+            "case": {"domain": "employment"},
+            "jurisdiction": {"country": "India", "state": "Karnataka", "city": "Bangalore"},
+            "is_ready_for_qa": True,
+            "followup_question": None,
+            "direct_legal_answer": "To draft the legal notice, state your designation, joining date, unpaid months, and give a clear 15-day demand period under Section 39 of the Karnataka Shops and Establishments Act.",
+        }
+
+        with patch.object(
+            service._client.chat.completions,
+            "create",
+            new_callable=AsyncMock,
+            return_value=mock_openai_response(openai_payload),
+        ):
+            res = await service.analyze_turn(state, "How do I draft the legal notice?")
+            assert res.is_ready_for_qa
+            assert res.direct_legal_answer is not None
+            assert "draft the legal notice" in res.direct_legal_answer
+
+    @pytest.mark.asyncio
+    async def test_mid_intake_side_query_answering(self, mock_openai_response):
+        """When the user asks an in-between legal question, the advocate directly answers it in followup_question."""
+        service = OpenAIIntakeService(api_key="sk-test-key")
+        state = ConversationRecord(mode=Mode.ACTIONABLE)
+        add_user_message(state, "My boss said I am fired over WhatsApp.")
+
+        openai_payload = {
+            "case": {"domain": "employment"},
+            "jurisdiction": {"country": "India", "state": None, "city": None},
+            "is_ready_for_qa": False,
+            "followup_question": "Under Indian employment law, a casual WhatsApp termination without formal notice or inquiry is arbitrary and invalid. To help identify your specific statutory remedies, which State and City was your company located in?",
+            "direct_legal_answer": None,
+        }
+
+        with patch.object(
+            service._client.chat.completions,
+            "create",
+            new_callable=AsyncMock,
+            return_value=mock_openai_response(openai_payload),
+        ):
+            res = await service.analyze_turn(state, "Wait, can my manager legally fire me over WhatsApp?")
+            assert not res.is_ready_for_qa
+            assert res.followup_question is not None
+            assert "WhatsApp termination without formal notice" in res.followup_question
+
 
 
 
