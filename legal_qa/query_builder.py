@@ -77,13 +77,14 @@ class QueryBuilder:
         # Add substantive context from later user messages
         additional_context = []
         for msg in user_messages[1:]:
-            if len(msg.split()) > 4:
-                additional_context.append(msg)
+            clean = msg.strip()
+            if clean and clean.lower() not in ("yes", "no", "ok", "okay", "thanks", "thank you", "got it"):
+                additional_context.append(clean)
 
         if additional_context:
             parts.append(
-                "Additional factual context from client: "
-                + " ".join(additional_context)
+                "Additional factual context and follow-up from client:\n"
+                + "\n".join(f"  - {c}" for c in additional_context)
             )
 
         # Closing: ask for actionable guidance in second person

@@ -243,8 +243,9 @@ class ConversationManager:
 
         # 7. Check if this is an ongoing conversational follow-up turn after initial advice
         has_prior_answers = bool(state.legal_qa_results or state.stage == ConversationStage.ANSWERED)
-        if has_prior_answers and intake_result.direct_legal_answer:
-            direct_answer = intake_result.direct_legal_answer
+        conversational_reply = intake_result.direct_legal_answer or intake_result.followup_question
+        if has_prior_answers and conversational_reply:
+            direct_answer = conversational_reply
             statutory_authorities = self._research.research_authorities(case_state)
             result = LegalQAResult(
                 question=user_message,

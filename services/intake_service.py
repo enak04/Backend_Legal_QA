@@ -364,8 +364,8 @@ class OpenAIIntakeService:
             "guidelines": (
                 "1. Communicate with warmth, empathy, and professional poise like an experienced senior Indian advocate in chambers (natural dialogue like ChatGPT).\n"
                 "2. Dynamic In-Between Question Answering: If the user asks a question or raises a doubt in their message (e.g. 'Is this legal?', 'Can they do that?', 'What does section X mean?'), ALWAYS answer their specific question directly first with legal clarity and empathy. If intake is still in progress, smoothly invite any missing fact after answering.\n"
-                "3. Topic Shifts: If the client changes topic or raises a new problem in between, pivot immediately and address the new problem naturally.\n"
-                "4. Ongoing Consultation Mode: If has_initial_advice_been_given is true, the user is in continuous consultation asking follow-up questions, clarifications, drafting advice, what-ifs, or a new query. Set is_ready_for_qa = true and answer their specific question directly, conversationally, and thoroughly in direct_legal_answer without repeating the 6-heading template.\n"
+                "3. Topic Shifts: If the client changes topic or raises a new problem in between (e.g. job loss, threats, harassment), acknowledge it with empathy, pivot immediately, and address the new problem naturally.\n"
+                "4. Ongoing Consultation Mode: If has_initial_advice_been_given is true, the user is in continuous consultation asking follow-up questions, clarifying facts, expressing dissatisfaction ('not happy with answer'), or sharing new problems (like job loss). ALWAYS set is_ready_for_qa = true and answer their specific message directly, empathetically, and conversationally in direct_legal_answer without repeating the 6-heading template.\n"
                 "5. Streamlined Intake Efficiency (For Initial Inquiries): Avoid prolonged interrogation. Once Jurisdiction (State/City) and core grievance facts are established, set is_ready_for_qa = true to deliver actionable remedies.\n"
                 f"6. Multilingual Consultation: The client's preferred language is {lang_name} ({active_lang}). "
                 "If this is a regional language, formulate any conversational response (followup_question or direct_legal_answer) "
@@ -445,8 +445,8 @@ Respond ONLY with a valid compact JSON object matching this structure:
     "amount": "string or null"
   },
   "is_ready_for_qa": boolean,
-  "followup_question": "string or null (Use this when gathering intake info or answering a mid-consultation question. If the user asked a question, raised a doubt, or shifted topic in their message, FIRST directly answer their question with clear legal explanation and empathy, then smoothly invite whatever fact is needed next. Never ignore what the user asked!)",
-  "direct_legal_answer": "string or null (If this is the initial comprehensive consultation: provide the complete, authoritative, second-person consultation guidance with Markdown sections: ### Understanding Your Situation, ### Your Legal Rights & Applicable Laws, ### What You Should Do Now, ### Important Timelines, ### Documents to Preserve, and ### A Word of Caution. IF initial advice was already given earlier, or if the user is asking a specific follow-up query/drafting/what-if/court fee question: provide a direct, conversational, and thorough legal response directly answering their question like a trusted senior advocate on ChatGPT without repeating the 6-heading template. Address the client directly as 'you' in their chosen language.)"
+  "followup_question": "string or null (ONLY use this when intake fact gathering is still ongoing BEFORE initial advice has been rendered)",
+  "direct_legal_answer": "string or null (For initial comprehensive advice: provide the full 6-part guidance. FOR ONGOING POST-ADVICE CONSULTATION: Whenever initial advice was already given, or if the client asks follow-up questions, expresses dissatisfaction, clarifies details, or raises additional issues like job loss, ALWAYS provide your complete, empathetic, conversational response here in direct_legal_answer like ChatGPT. Address the client directly as 'you' in their chosen language.)"
 }
 """
         )
@@ -754,7 +754,8 @@ Respond ONLY with a valid compact JSON object matching this structure:
             has_given_advice = bool(state.legal_qa_results or getattr(state, "stage", None) == "answered")
 
             if has_given_advice:
-                if parsed.get("is_ready_for_qa") or parsed.get("direct_legal_answer"):
+                conversational_reply = parsed.get("direct_legal_answer") or parsed.get("followup_question") or followup
+                if conversational_reply:
                     is_ready = True
                     followup = None
                 elif followup and not is_duplicate:
@@ -865,17 +866,30 @@ Respond ONLY with a valid compact JSON object matching this structure:
                 else:
                     statute_focus = "relevant Indian statutory provisions and judicial forums"
 
+                later_user_msgs = [m for m in user_messages[1:] if m.strip() and m.strip().lower() not in ("yes", "no", "ok", "okay", "thanks", "thank you")]
+                later_context_block = ""
+                if later_user_msgs:
+                    later_context_block = "\n\nAdditional client updates & follow-up statements:\n" + "\n".join(f"  - {m}" for m in later_user_msgs)
+
                 synthesized_query = (
                     f"Client's legal concern: {initial_statement}\n\n"
                     f"Relevant details established:\n"
                     f"{facts_block}\n\n"
                     f"Spotted legal issues:\n"
-                    f"  - {core_issue}\n\n"
+                    f"  - {core_issue}"
+                    f"{later_context_block}\n\n"
                     f"Address the recipient directly as 'you' in second person. What direct actionable "
                     f"legal remedies, filing procedures, evidentiary fallback strategies, and {statute_focus} apply?"
                 )
 
-        direct_legal_answer = parsed.get("direct_legal_answer")
+        if has_given_advice:
+            direct_legal_answer = parsed.get("direct_legal_answer") or parsed.get("followup_question") or followup
+            if direct_legal_answer:
+                followup = None
+                is_ready = True
+        else:
+            direct_legal_answer = parsed.get("direct_legal_answer")
+
         return IntakeAnalysisResult(
             extracted_facts=extracted_facts,
             is_ready_for_qa=is_ready,
