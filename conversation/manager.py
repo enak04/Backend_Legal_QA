@@ -42,8 +42,10 @@ from database.models import (
     ConversationRecord,
     ConversationStage,
     LegalQAResult,
+    MessageRole,
     Mode,
 )
+from conversation.intent_router import TurnIntent, classify_turn_intent
 from database.repository import ConversationRepository
 from legal_qa.client import (
     LegalQAClient,
@@ -210,9 +212,42 @@ class ConversationManager:
         # 4. Analyze turn via intake service
         intake_result = await self._intake.analyze_turn(state, user_message)
 
-        # 5. Update extracted facts and structured case state
         is_new_issue = getattr(intake_result, "is_new_legal_issue", False)
-        if is_new_issue:
+        turn_intent = classify_turn_intent(user_message, state, parsed_is_new_issue=is_new_issue)
+
+        # 4a. Handle Conceptual Questions (educational / definition inquiries)
+        if turn_intent == TurnIntent.CONCEPTUAL_QUESTION:
+            direct_answer = (
+                intake_result.direct_legal_answer
+                or self._generate_conceptual_fallback(user_message)
+            )
+            add_assistant_message(state, direct_answer)
+            state.last_assistant_question = None
+            state.stage = ConversationStage.ANSWERED
+            await self._repo.update(state)
+
+            return {
+                "type": "final_answer",
+                "conversation_id": state.conversation_id,
+                "mode": state.mode.value,
+                "language": state.language,
+                "answer": direct_answer,
+                "message": direct_answer,
+                "case_state": state.facts.get("case_state"),
+                "legal_assessment": state.facts.get("legal_assessment"),
+                "reasoning_chain": [],
+                "sources": [],
+                "authorities": [],
+                "timestamp": state.messages[-1].timestamp,
+            }
+
+        # 5. Update extracted facts and structured case state
+        is_new_dispute = (turn_intent == TurnIntent.NEW_DISPUTE) or is_new_issue
+        if is_new_dispute:
+            # Set active case anchor index to this turn so subsequent queries are scoped strictly to this dispute
+            user_turn_count = sum(1 for m in state.messages if m.role == MessageRole.USER)
+            state.facts["active_case_anchor_idx"] = max(0, user_turn_count - 1)
+
             # Cleanly re-initialize dispute-specific facts so previous matter doesn't contaminate new dispute
             for k in [
                 "legal_assessment", "core_issue", "employment_type", "salary",
@@ -254,7 +289,7 @@ class ConversationManager:
         # 7. Check if this is an ongoing conversational follow-up turn after initial advice
         has_prior_answers = bool(state.legal_qa_results or state.stage == ConversationStage.ANSWERED)
         conversational_reply = intake_result.direct_legal_answer or intake_result.followup_question
-        if has_prior_answers and not is_new_issue:
+        if (turn_intent == TurnIntent.FOLLOWUP_ON_ADVICE or has_prior_answers) and not is_new_dispute:
             statutory_authorities = self._research.research_authorities(case_state)
             if conversational_reply:
                 direct_answer = conversational_reply
@@ -544,6 +579,43 @@ class ConversationManager:
                 text = "\n".join(parts)
 
         return text
+
+    @staticmethod
+    def _generate_conceptual_fallback(query: str) -> str:
+        """Provide a clear, educational legal explanation for general legal queries."""
+        clean = query.strip().lower()
+        if "court" in clean:
+            return (
+                "In India, a court is a judicial institution established by law to resolve disputes, "
+                "administer justice, and uphold statutory and constitutional rights. "
+                "The judicial system is hierarchical: Civil Courts handle property, contract, and civil grievances; "
+                "Criminal Courts (Magistrate and Sessions Courts) try penal offences; High Courts exercise writ and "
+                "appellate jurisdiction in their respective States; and the Supreme Court of India serves as the apex constitutional forum."
+            )
+        if "severance" in clean or "notice pay" in clean:
+            return (
+                "Severance pay or notice pay in India refers to monetary compensation payable to an employee "
+                "upon involuntary termination without sufficient statutory notice. Under Section 25F of the Industrial Disputes Act, 1947, "
+                "and state Shops and Establishments Acts, an employer is generally required to provide 30 to 90 days' written notice "
+                "or wages in lieu of notice, plus retrenchment compensation equivalent to 15 days' average pay for each completed year of service."
+            )
+        if "gratuity" in clean:
+            return (
+                "Under the Payment of Gratuity Act, 1972, gratuity is a statutory retirement benefit payable to employees "
+                "who have rendered continuous service of at least 5 years in an establishment with 10 or more employees. "
+                "It is calculated at 15 days' wages for every completed year of service, subject to the statutory ceiling."
+            )
+        if "fir" in clean:
+            return (
+                "A First Information Report (FIR) is a formal written document prepared by police upon receiving information "
+                "about the commission of a cognizable offence (under Section 154 CrPC / Section 173 BNSS). "
+                "It sets the criminal justice and investigative machinery into motion."
+            )
+        return (
+            f"Regarding your legal inquiry '{query}': In Indian law, statutory rights and procedures are governed by specific enactments "
+            "and procedural codes. Depending on the nature of the matter, remedies may lie through statutory representations, dispute resolution boards, "
+            "or competent jurisdictional courts and tribunals."
+        )
 
 
 # ── Exceptions ────────────────────────────────────────────────

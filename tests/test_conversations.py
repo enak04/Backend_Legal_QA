@@ -457,3 +457,67 @@ class TestMultiTurnConversation:
         assert conv["stage"] == "answered"
         # Verify conversational follow-ups do NOT pollute legal_qa_results
         assert len(conv.get("legal_qa_results", [])) == 1
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 15. Intent routing & multi-dispute pipeline isolation
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+class TestIntentRoutingAndMultiDispute:
+    async def test_conceptual_question_does_not_pollute_qa_results(self, test_client):
+        """A pure educational question like 'What is a court' should give a direct answer without Base ML call."""
+        resp = await test_client.post("/api/conversations", json={"mode": "actionable"})
+        cid = resp.json()["conversation_id"]
+
+        msg = await test_client.post(
+            f"/api/conversations/{cid}/messages",
+            json={"message": "What is a court?"},
+        )
+        assert msg.status_code == 200
+        data = msg.json()
+        assert data["type"] == "final_answer"
+        assert "court" in data["answer"].lower()
+
+        # Check conversation record
+        get_resp = await test_client.get(f"/api/conversations/{cid}")
+        conv = get_resp.json()
+        assert len(conv.get("legal_qa_results", [])) == 0
+
+    async def test_new_dispute_anchors_and_isolates_case(self, test_client):
+        """When switching from employment to rental dispute, anchor resets and doesn't poison subsequent query."""
+        resp = await test_client.post("/api/conversations", json={"mode": "actionable"})
+        cid = resp.json()["conversation_id"]
+
+        # 1. First dispute: employment termination in Bangalore
+        await test_client.post(
+            f"/api/conversations/{cid}/messages",
+            json={"message": "I was fired from my job at Google in Bangalore and they refused to pay severance."},
+        )
+        # Answer follow-up if needed
+        ans1 = await test_client.post(
+            f"/api/conversations/{cid}/messages",
+            json={"message": "I worked as a software engineer for 3 years with 1 lakh salary and have written employment contract."},
+        )
+        assert ans1.status_code == 200
+
+        # 2. Introduce completely new dispute: rental apartment deposit
+        pivot_turn = await test_client.post(
+            f"/api/conversations/{cid}/messages",
+            json={"message": "I have another legal issue as well. My landlord is refusing to return my security deposit of 50000 in Bangalore."},
+        )
+        assert pivot_turn.status_code == 200
+        pivot_data = pivot_turn.json()
+        # Verify it either asks a follow-up or delivers advice specifically for rental/deposit
+        answer_text = pivot_data.get("answer", "") or pivot_data.get("message", "")
+        assert any(
+            term in answer_text.lower()
+            for term in ["deposit", "landlord", "rental", "premises", "eviction", "locked out", "tenan"]
+        )
+
+        # Check facts: anchor index is set and domain switched
+        get_resp = await test_client.get(f"/api/conversations/{cid}")
+        conv = get_resp.json()
+        facts = conv.get("facts", {})
+        assert facts.get("active_case_anchor_idx") is not None
+        assert facts.get("active_case_anchor_idx") >= 2

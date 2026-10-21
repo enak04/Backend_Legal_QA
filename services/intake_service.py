@@ -213,13 +213,28 @@ class OpenAIIntakeService:
         state: ConversationRecord,
         latest_user_message: str,
     ) -> IntakeAnalysisResult:
-        """Deterministic fallback analysis using FollowUpEngine."""
+        from conversation.intent_router import is_conceptual_legal_question, is_new_dispute_signal
+
+        if is_conceptual_legal_question(latest_user_message):
+            return IntakeAnalysisResult(
+                extracted_facts={},
+                is_ready_for_qa=True,
+                followup_question=None,
+                direct_legal_answer=None,
+                case_state=state.facts.get("case_state") if isinstance(state.facts.get("case_state"), dict) else None,
+                is_new_legal_issue=False,
+            )
+
         case_state_raw = state.facts.get("case_state")
         if isinstance(case_state_raw, UniversalCaseState):
             case_state = case_state_raw
         elif isinstance(case_state_raw, dict):
             case_state = UniversalCaseState(**case_state_raw)
         else:
+            case_state = UniversalCaseState()
+
+        is_new_issue = is_new_dispute_signal(latest_user_message, current_domain=case_state.case_domain)
+        if is_new_issue:
             case_state = UniversalCaseState()
 
         # Update universal case state
@@ -250,6 +265,7 @@ class OpenAIIntakeService:
             followup_question=followup,
             synthesized_query=synthesized_query,
             case_state=case_state.model_dump(),
+            is_new_legal_issue=is_new_issue,
         )
 
     async def _analyze_with_openai(
@@ -448,10 +464,10 @@ Respond ONLY with a valid compact JSON object matching this structure:
     "core_issue": "string or null",
     "amount": "string or null"
   },
-  "is_ready_for_qa": boolean,
-  "is_new_legal_issue": boolean,
-  "followup_question": "string or null (ONLY use this when intake fact gathering is still ongoing BEFORE initial advice has been rendered)",
-  "direct_legal_answer": "string or null (For initial comprehensive advice: provide the full 6-part guidance. FOR ONGOING POST-ADVICE CONSULTATION: Whenever initial advice was already given, or if the client asks follow-up questions, expresses dissatisfaction, clarifies details, or raises additional issues like job loss, ALWAYS provide your complete, empathetic, conversational response here in direct_legal_answer like ChatGPT. Address the client directly as 'you' in their chosen language.)"
+  "is_ready_for_qa": boolean (true ONLY when all crucial dispute facts and location are established to render formal legal advice. Set false if you need more details or are asking clarifying questions),
+  "is_new_legal_issue": boolean (true if the client introduces or shifts to a brand new legal dispute),
+  "followup_question": "string or null (Use this whenever intake is ongoing or when you need clarifying details before rendering formal advice. Must keep is_ready_for_qa = false)",
+  "direct_legal_answer": "string or null (Provide full actionable advice when is_ready_for_qa = true, or your empathetic, conversational response for ongoing follow-up questions / conceptual inquiries like 'What is a court')"
 }
 """
         )
@@ -874,6 +890,24 @@ Respond ONLY with a valid compact JSON object matching this structure:
                 is_ready = True
                 followup = None
 
+        # If this is a new dispute and the response is asking clarifying questions / details,
+        # it is an intake follow-up turn — NOT ready for final QA yet!
+        candidate_followup = parsed.get("followup_question")
+        raw_answer = str(parsed.get("direct_legal_answer") or "").strip()
+        is_reply_a_question = bool(
+            candidate_followup
+            or raw_answer.endswith("?")
+            or any(phrase in raw_answer.lower() for phrase in [
+                "can you share", "was there any notice", "did you receive", "what reason was given",
+                "please share more details", "could you clarify", "could you please confirm",
+                "were you given", "why were you forced"
+            ])
+        )
+        if is_new_issue and is_reply_a_question:
+            is_ready = False
+            followup = candidate_followup or raw_answer
+            direct_legal_answer = None
+
         if is_ready:
             followup = None
             jurisdiction_str = universal_state.jurisdiction.state or extracted_facts.get("state") or "India"
@@ -883,7 +917,19 @@ Respond ONLY with a valid compact JSON object matching this structure:
             raw_amt = universal_state.financial.amount
             formatted_amt = f"₹{raw_amt:,.0f}" if isinstance(raw_amt, (int, float)) else str(raw_amt or "")
             dues_str = universal_state.financial.amount_raw or (formatted_amt if formatted_amt else universal_state.financial.dues_period) or ""
-            initial_statement = user_messages[0] if user_messages else ""
+
+            # Anchor query strictly to active dispute, never old resolved cases
+            anchor_idx = 0
+            if is_new_issue:
+                anchor_idx = start_idx
+            elif state.facts.get("active_case_anchor_idx") is not None:
+                anchor_idx = int(state.facts.get("active_case_anchor_idx", 0))
+
+            if anchor_idx >= len(user_messages) or anchor_idx < 0:
+                anchor_idx = 0
+
+            active_user_messages = user_messages[anchor_idx:]
+            initial_statement = active_user_messages[0] if active_user_messages else ""
 
             domain_def = domain_registry.get(universal_state.case_domain)
 
@@ -907,7 +953,7 @@ Respond ONLY with a valid compact JSON object matching this structure:
                 fact_bullets.append("  - Forum Jurisdiction: Central Administrative Tribunal (CAT) / State Administrative Tribunal under Administrative Tribunals Act 1985 Section 19 or High Court under Article 226.")
 
             for k, v in extracted_facts.items():
-                if k not in {"state", "city", "core_issue", "detected_domain", "amount", "amount_raw", "dues_period", "employment_type"}:
+                if k not in {"state", "city", "core_issue", "detected_domain", "amount", "amount_raw", "dues_period", "employment_type", "active_case_anchor_idx"}:
                     fact_bullets.append(f"  - {k.replace('_', ' ').title()}: {v}")
 
             facts_block = "\n".join(fact_bullets)
@@ -919,7 +965,7 @@ Respond ONLY with a valid compact JSON object matching this structure:
                 else:
                     statute_focus = "relevant Indian statutory provisions and judicial forums"
 
-                later_user_msgs = [m for m in user_messages[1:] if m.strip() and m.strip().lower() not in ("yes", "no", "ok", "okay", "thanks", "thank you")]
+                later_user_msgs = [m for m in active_user_messages[1:] if m.strip() and m.strip().lower() not in ("yes", "no", "ok", "okay", "thanks", "thank you")]
                 later_context_block = ""
                 if later_user_msgs:
                     later_context_block = "\n\nAdditional client updates & follow-up statements:\n" + "\n".join(f"  - {m}" for m in later_user_msgs)

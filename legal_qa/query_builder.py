@@ -30,14 +30,19 @@ class QueryBuilder:
         if not user_messages:
             return ""
 
-        original_problem = user_messages[0]
+        anchor_idx = state.facts.get("active_case_anchor_idx", 0)
+        if not isinstance(anchor_idx, int) or anchor_idx < 0 or anchor_idx >= len(user_messages):
+            anchor_idx = 0
+
+        active_user_messages = user_messages[anchor_idx:]
+        original_problem = active_user_messages[0]
         case_state = state.facts.get("case_state") or {}
 
         # Add facts from state.facts
         non_meta_facts = {
             k: v
             for k, v in state.facts.items()
-            if k not in ("detected_domain", "case_state", "legal_assessment") and not isinstance(v, (dict, list))
+            if k not in ("detected_domain", "case_state", "legal_assessment", "active_case_anchor_idx") and not isinstance(v, (dict, list))
         }
 
         # Pull jurisdiction if available
@@ -51,7 +56,7 @@ class QueryBuilder:
             if isinstance(fin, dict) and fin.get("amount_raw") and "amount" not in non_meta_facts:
                 non_meta_facts["amount"] = fin["amount_raw"]
 
-        if len(user_messages) == 1 and not non_meta_facts and not has_case_issues:
+        if len(active_user_messages) == 1 and not non_meta_facts and not has_case_issues:
             return original_problem
 
         parts: list[str] = []
@@ -74,9 +79,9 @@ class QueryBuilder:
                 issue_lines.append(f"  - {iss_name}")
             parts.append("Spotted legal issues:\n" + "\n".join(issue_lines))
 
-        # Add substantive context from later user messages
+        # Add substantive context from later user messages of the active dispute
         additional_context = []
-        for msg in user_messages[1:]:
+        for msg in active_user_messages[1:]:
             clean = msg.strip()
             if clean and clean.lower() not in ("yes", "no", "ok", "okay", "thanks", "thank you", "got it"):
                 additional_context.append(clean)
