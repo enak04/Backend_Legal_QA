@@ -64,6 +64,7 @@ from services.intake_service import OpenAIIntakeService
 from services.language import (
     detect_language,
     is_indic_language,
+    localize_system_question,
     normalize_language_code,
     resolve_turn_language,
 )
@@ -271,6 +272,10 @@ class ConversationManager:
         # 6. Check if more information is needed
         if not intake_result.is_ready_for_qa and intake_result.followup_question:
             followup_question = intake_result.followup_question
+            active_lang = state.language or "en"
+            if is_indic_language(active_lang):
+                followup_question = localize_system_question(followup_question, active_lang)
+
             add_assistant_message(state, followup_question)
             state.stage = ConversationStage.GATHERING_INFO
             await self._repo.update(state)

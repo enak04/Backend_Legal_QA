@@ -223,11 +223,37 @@ INDIAN_STATES = [
 ]
 
 MAJOR_INDIAN_CITIES = {
-    "Bengaluru": "Karnataka", "Bangalore": "Karnataka", "Mumbai": "Maharashtra",
-    "Pune": "Maharashtra", "Delhi": "Delhi", "New Delhi": "Delhi",
-    "Hyderabad": "Telangana", "Chennai": "Tamil Nadu", "Kolkata": "West Bengal",
-    "Ahmedabad": "Gujarat", "Gurgaon": "Haryana", "Gurugram": "Haryana",
-    "Noida": "Uttar Pradesh", "Jaipur": "Rajasthan", "Lucknow": "Uttar Pradesh",
+    "Bengaluru": "Karnataka", "Bangalore": "Karnataka",
+    "बैंगलोर": "Karnataka", "बेंगलुरु": "Karnataka", "बेंगलूरु": "Karnataka",
+    "బెంగళూరు": "Karnataka", "ಬೆಂಗಳೂರು": "Karnataka", "பெங்களூரு": "Karnataka",
+    "Mumbai": "Maharashtra", "मुंबई": "Maharashtra", "मुम्बई": "Maharashtra", "बॉम्बे": "Maharashtra",
+    "Pune": "Maharashtra", "पुणे": "Maharashtra",
+    "Delhi": "Delhi", "New Delhi": "Delhi", "दिल्ली": "Delhi", "नई दिल्ली": "Delhi",
+    "Hyderabad": "Telangana", "हैदराबाद": "Telangana", "హైదరాబాద్": "Telangana",
+    "Chennai": "Tamil Nadu", "चेन्नई": "Tamil Nadu", "சென்னை": "Tamil Nadu",
+    "Kolkata": "West Bengal", "कोलकाता": "West Bengal", "কলকাতা": "West Bengal",
+    "Ahmedabad": "Gujarat", "अहमदाबाद": "Gujarat",
+    "Gurgaon": "Haryana", "Gurugram": "Haryana", "गुडगाँव": "Haryana", "गुरुग्राम": "Haryana",
+    "Noida": "Uttar Pradesh", "नोएडा": "Uttar Pradesh",
+    "Jaipur": "Rajasthan", "जयपुर": "Rajasthan",
+    "Lucknow": "Uttar Pradesh", "लखनऊ": "Uttar Pradesh",
+}
+
+CANONICAL_CITY_NAMES = {
+    "बैंगलोर": "Bengaluru", "बेंगलुरु": "Bengaluru", "बेंगलूरु": "Bengaluru",
+    "బెంగళూరు": "Bengaluru", "ಬೆಂಗಳೂರು": "Bengaluru", "பெங்களூரு": "Bengaluru",
+    "Bangalore": "Bengaluru", "Bengaluru": "Bengaluru",
+    "मुंबई": "Mumbai", "मुम्बई": "Mumbai", "बॉम्बे": "Mumbai", "Mumbai": "Mumbai",
+    "Pune": "Pune", "पुणे": "Pune",
+    "Delhi": "Delhi", "New Delhi": "Delhi", "दिल्ली": "Delhi", "नई दिल्ली": "Delhi",
+    "Hyderabad": "Hyderabad", "हैदराबाद": "Hyderabad", "హైదరాబాద్": "Hyderabad",
+    "Chennai": "Chennai", "चेन्नई": "Chennai", "சென்னை": "Chennai",
+    "Kolkata": "Kolkata", "कोलकाता": "Kolkata", "কলকাতা": "Kolkata",
+    "Ahmedabad": "Ahmedabad", "अहमदाबाद": "Ahmedabad",
+    "Gurgaon": "Gurugram", "Gurugram": "Gurugram", "गुडगाँव": "Gurugram", "गुरुग्राम": "Gurugram",
+    "Noida": "Noida", "नोएडा": "Noida",
+    "Jaipur": "Jaipur", "जयपुर": "Jaipur",
+    "Lucknow": "Lucknow", "लखनऊ": "Lucknow",
 }
 
 
@@ -252,8 +278,15 @@ def extract_facts(text: str, last_question_key: str | None = None) -> dict[str, 
 
     # 1. Jurisdiction: State and City
     for city, state in MAJOR_INDIAN_CITIES.items():
-        if re.search(rf"\b{city.lower()}\b", text_lower):
-            facts["city"] = city
+        matched = False
+        if any(ord(c) > 127 for c in city):
+            if city in text_clean:
+                matched = True
+        else:
+            if re.search(rf"\b{city.lower()}\b", text_lower):
+                matched = True
+        if matched:
+            facts["city"] = CANONICAL_CITY_NAMES.get(city, city)
             facts["state"] = state
             break
 

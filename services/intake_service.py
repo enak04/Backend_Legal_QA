@@ -259,6 +259,11 @@ class OpenAIIntakeService:
         else:
             followup = self._fallback_engine.select_highest_value_question(case_state)
 
+        active_lang = state.language or "en"
+        from services.language import is_indic_language, localize_system_question
+        if followup and is_indic_language(active_lang):
+            followup = localize_system_question(followup, active_lang)
+
         return IntakeAnalysisResult(
             extracted_facts=extracted,
             is_ready_for_qa=is_ready,
@@ -637,6 +642,20 @@ Respond ONLY with a valid compact JSON object matching this structure:
         elif jur_data.get("state") and "state" not in extracted_facts:
             extracted_facts["state"] = jur_data["state"]
 
+        # Enforce canonical city to state mapping (prevents LLM hallucinating Bengaluru -> West Bengal)
+        from conversation.followup import MAJOR_INDIAN_CITIES, CANONICAL_CITY_NAMES
+        city_candidate = jur_data.get("city") or extracted_facts.get("city")
+        if city_candidate:
+            norm_c = str(city_candidate).strip().lower()
+            for c_k, s_v in MAJOR_INDIAN_CITIES.items():
+                if norm_c == c_k.lower() or c_k.lower() in norm_c:
+                    canon_c = CANONICAL_CITY_NAMES.get(c_k, c_k)
+                    jur_data["city"] = canon_c
+                    jur_data["state"] = s_v
+                    extracted_facts["city"] = canon_c
+                    extracted_facts["state"] = s_v
+                    break
+
         raw_issues = case_info.get("issues", [])
         issues_list = []
         for i in raw_issues:
@@ -854,7 +873,11 @@ Respond ONLY with a valid compact JSON object matching this structure:
                 elif (
                     universal_state.case_domain == "employment"
                     and user_msg_count <= 3
-                    and not any(w in all_user_text.lower() for w in ["salary", "dues", "pay", "lakh", "crore", "thousand", "rs", "₹", "gratuity", "wage", "compensation", "death", "injury", "stroke", "selection", "interview", "severance"])
+                    and not any(w in all_user_text.lower() for w in [
+                        "salary", "dues", "pay", "lakh", "crore", "thousand", "rs", "₹", "gratuity",
+                        "wage", "compensation", "death", "injury", "stroke", "selection", "interview",
+                        "severance", "पेंडिंग", "वेतन", "रुपये", "बकाया", "पैसे", "pending"
+                    ])
                     and not universal_state.financial.amount
                     and not universal_state.financial.amount_raw
                     and not universal_state.financial.dues_period
@@ -988,6 +1011,11 @@ Respond ONLY with a valid compact JSON object matching this structure:
                 is_ready = True
         else:
             direct_legal_answer = parsed.get("direct_legal_answer")
+
+        active_lang = state.language or "en"
+        from services.language import is_indic_language, localize_system_question
+        if followup and is_indic_language(active_lang):
+            followup = localize_system_question(followup, active_lang)
 
         return IntakeAnalysisResult(
             extracted_facts=extracted_facts,

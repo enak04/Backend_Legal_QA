@@ -208,3 +208,40 @@ class TestMultilingualManagerFlow:
         r5 = await manager.process_message(record.conversation_id, "Please explain my legal remedies in English now.")
         assert r5["language"] == "en"
 
+    async def test_hindi_consultation_does_not_switch_to_english_on_amount(self, manager):
+        """
+        Verify that an ongoing Hindi conversation never leaks English follow-up questions
+        and that 'बैंगलोर' maps strictly to Karnataka (never West Bengal).
+        """
+        record = await manager.create_conversation(mode=Mode.ACTIONABLE, language="hi")
+        cid = record.conversation_id
+
+        # Turn 1: Fired from job
+        t1 = await manager.process_message(cid, "मुझे नौकरी से निकाल दिया गया है")
+        assert t1["language"] == "hi"
+        # Must not contain English words like 'company' or 'organization'
+        assert not any(w in t1["answer"].lower() for w in ["government", "company", "psu"])
+
+        # Turn 2: City provided as 'बैंगलोर'
+        t2 = await manager.process_message(cid, "बैंगलोर")
+        assert t2["language"] == "hi"
+
+        # Check state: must be Karnataka, NOT West Bengal
+        conv = await manager.get_conversation(cid)
+        facts = conv.facts or {}
+        case_state = facts.get("case_state") or {}
+        jur = case_state.get("jurisdiction") or {}
+        assert jur.get("city") in ("Bengaluru", "Bangalore", "बैंगलोर")
+        assert jur.get("state") == "Karnataka"
+        assert facts.get("state") == "Karnataka"
+
+        # Turn 3: Pending amount 'मुझे एक 3000 पेंडिंग करता है'
+        t3 = await manager.process_message(cid, "मुझे एक 3000 पेंडिंग करता है")
+        assert t3["language"] == "hi"
+        # Must NOT be in English
+        ans3 = t3.get("answer", "") or t3.get("message", "")
+        assert not any(w in ans3.lower() for w in ["private company", "government/psu", "organization", "were you working"])
+        # Should contain Devanagari characters
+        assert any("\u0900" <= ch <= "\u097F" for ch in ans3)
+
+
