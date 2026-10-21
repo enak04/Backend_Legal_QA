@@ -211,6 +211,16 @@ class ConversationManager:
         intake_result = await self._intake.analyze_turn(state, user_message)
 
         # 5. Update extracted facts and structured case state
+        is_new_issue = getattr(intake_result, "is_new_legal_issue", False)
+        if is_new_issue:
+            # Cleanly re-initialize dispute-specific facts so previous matter doesn't contaminate new dispute
+            for k in [
+                "legal_assessment", "core_issue", "employment_type", "salary",
+                "written_contract", "dues_period", "amount", "amount_raw",
+                "detected_domain", "city", "state", "summary"
+            ]:
+                state.facts.pop(k, None)
+
         if intake_result.extracted_facts:
             update_facts(state, intake_result.extracted_facts)
             logger.info(
@@ -244,16 +254,16 @@ class ConversationManager:
         # 7. Check if this is an ongoing conversational follow-up turn after initial advice
         has_prior_answers = bool(state.legal_qa_results or state.stage == ConversationStage.ANSWERED)
         conversational_reply = intake_result.direct_legal_answer or intake_result.followup_question
-        if has_prior_answers and conversational_reply:
-            direct_answer = conversational_reply
+        if has_prior_answers and not is_new_issue:
             statutory_authorities = self._research.research_authorities(case_state)
-            result = LegalQAResult(
-                question=user_message,
-                answer=direct_answer,
-                reasoning_chain=[],
-                retrieved_cases=[],
-            )
-            store_legal_qa_result(state, result)
+            if conversational_reply:
+                direct_answer = conversational_reply
+            else:
+                direct_answer = (
+                    f"Regarding your question about '{user_message}': "
+                    f"In connection with your {case_state.case_domain or 'legal'} dispute, you should adhere to the prescribed statutory timelines and preserve all documentation. "
+                    "If you are drafting a legal notice or calculating dues, provide 15 to 30 days for compliance before initiating formal proceedings before the jurisdictional forum."
+                )
             add_assistant_message(state, direct_answer)
             state.last_assistant_question = None
             state.stage = ConversationStage.ANSWERED

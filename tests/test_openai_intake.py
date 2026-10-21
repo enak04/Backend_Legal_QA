@@ -11,7 +11,7 @@ import pytest
 
 from conversation.manager import ConversationManager
 from conversation.state import add_user_message
-from database.models import ConversationRecord, ConversationStage, MessageRole, Mode
+from database.models import ConversationRecord, ConversationStage, LegalQAResult, MessageRole, Mode
 from database.repository import SQLiteConversationRepository
 from legal_qa.client import LegalQAClient
 from services.intake_service import OpenAIIntakeService
@@ -557,6 +557,93 @@ class TestDeclarativeDomainIntake:
             assert not res.is_ready_for_qa
             assert res.followup_question is not None
             assert "WhatsApp termination without formal notice" in res.followup_question
+
+    @pytest.mark.asyncio
+    async def test_tech_corporate_google_auto_identifies_private(self, mock_openai_response):
+        """User mentioning Google Bangalore with severance pay should immediately identify private employer and be ready without robotic questions."""
+        service = OpenAIIntakeService(api_key="sk-test-key")
+        state = ConversationRecord(mode=Mode.ACTIONABLE)
+
+        user_msg = "I was fired from Google Bangalore office without any severance pay with 5YoE."
+        openai_payload = {
+            "case": {
+                "domain": "employment",
+                "issues": [{"issue": "wrongful termination without severance pay", "domain": "employment", "status": "confirmed"}],
+                "summary": "Client was terminated from Google Bangalore office without severance pay."
+            },
+            "jurisdiction": {"country": "India", "state": "Karnataka", "city": "Bangalore"},
+            "financial": {"amount": None, "amount_raw": "severance pay"},
+            "extracted_facts": {
+                "detected_domain": "employment",
+                "state": "Karnataka",
+                "city": "Bangalore",
+                "core_issue": "wrongful termination without severance pay",
+            },
+            "is_ready_for_qa": True,
+            "is_new_legal_issue": False,
+            "followup_question": None,
+            "direct_legal_answer": "You have statutory rights under the Karnataka Shops and Commercial Establishments Act, 1961...",
+        }
+
+        with patch.object(
+            service._client.chat.completions,
+            "create",
+            new_callable=AsyncMock,
+            return_value=mock_openai_response(openai_payload),
+        ):
+            res = await service.analyze_turn(state, user_msg)
+            assert res.is_ready_for_qa, "Should be ready for QA immediately!"
+            assert res.followup_question is None
+            assert res.extracted_facts.get("employment_type") == "private"
+            assert res.case_state["domain_extensions"]["employment"]["employment_type"] == "private"
+
+    @pytest.mark.asyncio
+    async def test_topic_shift_to_new_legal_issue_sets_flag_and_resets_facts(self, mock_openai_response):
+        """When user switches from Google employment to Hyderabad landlord deposit, is_new_legal_issue is True and facts are isolated."""
+        service = OpenAIIntakeService(api_key="sk-test-key")
+        state = ConversationRecord(mode=Mode.ACTIONABLE)
+        state.facts["detected_domain"] = "employment"
+        state.facts["case_state"] = {"case_domain": "employment"}
+        state.facts["employment_type"] = "private"
+        add_user_message(state, "I was fired from Google Bangalore without severance.")
+        state.messages.append(type("Msg", (), {"role": MessageRole.ASSISTANT, "content": "Here is your employment advice."})())
+        state.legal_qa_results.append(LegalQAResult(question="Google termination", answer="Remedies under Karnataka Shops Act", reasoning_chain=[], retrieved_cases=[]))
+        state.stage = "answered"
+
+        new_issue_msg = "My landlord is refusing to return my security deposit of 50,000 rupees in Hyderabad."
+        openai_payload = {
+            "case": {
+                "domain": "property",
+                "issues": [{"issue": "refusal to return security deposit", "domain": "property", "status": "hypothesis"}],
+                "summary": "Landlord refusing 50,000 rupees security deposit in Hyderabad."
+            },
+            "jurisdiction": {"country": "India", "state": "Telangana", "city": "Hyderabad"},
+            "financial": {"amount": 50000.0, "amount_raw": "50,000 rupees"},
+            "extracted_facts": {
+                "detected_domain": "property",
+                "state": "Telangana",
+                "city": "Hyderabad",
+                "core_issue": "refusal to return security deposit",
+                "amount": "50,000 rupees",
+            },
+            "is_ready_for_qa": True,
+            "is_new_legal_issue": True,
+            "followup_question": None,
+            "direct_legal_answer": "Under Telangana tenancy law...",
+        }
+
+        with patch.object(
+            service._client.chat.completions,
+            "create",
+            new_callable=AsyncMock,
+            return_value=mock_openai_response(openai_payload),
+        ):
+            res = await service.analyze_turn(state, new_issue_msg)
+            assert res.is_new_legal_issue is True
+            assert res.is_ready_for_qa is True
+            assert res.case_state["case_domain"] == "property"
+            assert "employment" not in res.case_state.get("domain_extensions", {})
+            assert "employment_type" not in res.extracted_facts
 
 
 

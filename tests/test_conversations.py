@@ -455,3 +455,5 @@ class TestMultiTurnConversation:
         conv = get_resp.json()
         assert len(conv["messages"]) >= 8  # multiple user and assistant turns
         assert conv["stage"] == "answered"
+        # Verify conversational follow-ups do NOT pollute legal_qa_results
+        assert len(conv.get("legal_qa_results", [])) == 1

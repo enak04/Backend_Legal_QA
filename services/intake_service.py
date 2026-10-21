@@ -69,6 +69,7 @@ class IntakeAnalysisResult:
     synthesized_query: str | None = None
     case_state: dict[str, Any] | None = None
     direct_legal_answer: str | None = None
+    is_new_legal_issue: bool = False
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -96,15 +97,18 @@ You advise across all domains of Indian law (labor/employment, consumer, propert
   * NEVER ignore what the client asked just to extract a missing fact!
   * After answering their question clearly, if a crucial piece of information (such as city/state or document existence) is still needed to provide their comprehensive action plan, smoothly and naturally invite that detail in the same response.
 - **Graceful Topic Changes & Issue Pivots**:
-  * If the client shifts topic, introduces a new issue, or pivots (e.g. "Actually forget salary for a second, what about my laptop?", or "My landlord is also threatening to cut power"):
-  * Acknowledge the shift with empathy and presence ("Understood, let's address the immediate threat to your electricity first...").
+  * If the client shifts topic, introduces a new issue, or pivots (e.g. "Actually forget salary for a second, what about my laptop?", "My landlord is also threatening to cut power", or "I have another legal issue as well... My landlord is refusing to return my security deposit"):
+  * Set `is_new_legal_issue = true`!
+  * Set the new legal domain and spot issues for the new dispute.
+  * If sufficient core facts for the new dispute are already present (such as location and nature of dispute), set `is_ready_for_qa = true`. If more crucial facts are needed for the new issue, set `is_ready_for_qa = false` and ask `followup_question`.
+  * Acknowledge the shift with empathy and presence ("Understood, let's address your new issue regarding...").
   * Focus immediately on the issue the client currently cares about, update the legal domain, and advise accordingly.
 - **Continuous Consultation & Follow-up Q&A (Post-Advice Dialogue)**:
   * If the client has already received legal advice / an action plan in earlier turns, the consultation NEVER closes! The conversation remains continuously active.
-  * When the client asks follow-up queries ("How do I draft that notice?", "What if they don't reply in 15 days?", "Can I file an FIR?", "What are the court fees?", "What if they fire me anyway?"):
-  * Provide a direct, conversational, and thorough answer to their specific question in `direct_legal_answer` with `is_ready_for_qa = true`.
+  * When the client asks follow-up queries regarding the ongoing matter ("How do I draft that notice?", "What if they don't reply in 15 days?", "Can I file an FIR?", "What are the court fees?", "What if they fire me anyway?", "What if I was drunk in office?"):
+  * Provide a direct, conversational, and thorough answer to their specific question in `direct_legal_answer` with `is_ready_for_qa = true` and `is_new_legal_issue = false`.
   * DO NOT regurgitate the 6-heading action plan template again for targeted follow-up queries. Speak naturally, authoritatively, and conversationally like ChatGPT!
-  * If they introduce a brand-new dispute, advise them on the new dispute with the same high standard.
+  * If they introduce a brand-new dispute (e.g. landlord deposit after employment termination), set `is_new_legal_issue = true` and advise them on the new dispute with the same high standard.
 
 ### 3. CORE FACTUAL PILLARS BY LEGAL DOMAIN:
 Actionable legal remedies require domain-appropriate facts:
@@ -393,7 +397,7 @@ class OpenAIIntakeService:
         content = response.choices[0].message.content or "{}"
         parsed = json.loads(content)
 
-        return self._parse_openai_response(parsed, state)
+        return self._parse_openai_response(parsed, state, latest_user_message=latest_user_message)
 
     def _build_dynamic_prompt(
         self,
@@ -445,6 +449,7 @@ Respond ONLY with a valid compact JSON object matching this structure:
     "amount": "string or null"
   },
   "is_ready_for_qa": boolean,
+  "is_new_legal_issue": boolean,
   "followup_question": "string or null (ONLY use this when intake fact gathering is still ongoing BEFORE initial advice has been rendered)",
   "direct_legal_answer": "string or null (For initial comprehensive advice: provide the full 6-part guidance. FOR ONGOING POST-ADVICE CONSULTATION: Whenever initial advice was already given, or if the client asks follow-up questions, expresses dissatisfaction, clarifies details, or raises additional issues like job loss, ALWAYS provide your complete, empathetic, conversational response here in direct_legal_answer like ChatGPT. Address the client directly as 'you' in their chosen language.)"
 }
@@ -541,6 +546,7 @@ Respond ONLY with a valid compact JSON object matching this structure:
         self,
         parsed: dict[str, Any],
         state: ConversationRecord,
+        latest_user_message: str = "",
     ) -> IntakeAnalysisResult:
         """Parse structured output into UniversalCaseState."""
         raw_facts = parsed.get("extracted_facts") or {}
@@ -561,6 +567,10 @@ Respond ONLY with a valid compact JSON object matching this structure:
             elif m_role in (MessageRole.ASSISTANT, "assistant"):
                 previous_questions_lower.append(m_content.strip().lower())
 
+        if latest_user_message and (not user_messages or latest_user_message != user_messages[-1]):
+            user_messages.append(latest_user_message)
+            user_msg_count += 1
+
         all_user_text = " ".join(user_messages)
         from conversation.followup import extract_facts
         deterministic_facts = extract_facts(all_user_text)
@@ -575,8 +585,33 @@ Respond ONLY with a valid compact JSON object matching this structure:
             if isinstance(state.facts.get("case_state"), dict)
             else None
         )
-        domain = case_info.get("domain") or extracted_facts.get("detected_domain") or existing_domain or "general"
+        parsed_domain = case_info.get("domain") or extracted_facts.get("detected_domain")
+        domain = parsed_domain or existing_domain or "general"
         extracted_facts["detected_domain"] = domain
+
+        # Detect if this is a newly introduced legal issue
+        is_new_issue = bool(parsed.get("is_new_legal_issue"))
+        if not is_new_issue and existing_domain and parsed_domain:
+            if existing_domain != "general" and parsed_domain != "general" and existing_domain != parsed_domain:
+                is_new_issue = True
+
+        if is_new_issue:
+            # Find the start of the new issue in user_messages
+            start_idx = len(user_messages) - 1
+            for idx, msg in enumerate(user_messages):
+                if re.search(r"\b(another legal issue|different legal issue|new legal issue|separate issue|another matter|different matter)\b", msg, re.I):
+                    start_idx = idx
+                    break
+            current_issue_messages = user_messages[start_idx:]
+            all_user_text = " ".join(current_issue_messages)
+            # Re-extract deterministic facts only for the new issue
+            deterministic_facts = extract_facts(all_user_text)
+            # Drop old domain-specific facts
+            old_domain_keys = {"employment_type", "written_contract", "dues_period", "salary"}
+            extracted_facts = {k: v for k, v in extracted_facts.items() if k not in old_domain_keys}
+            for k, v in deterministic_facts.items():
+                if k not in extracted_facts or not extracted_facts[k]:
+                    extracted_facts[k] = v
 
         jur_data = parsed.get("jurisdiction") or {}
         if extracted_facts.get("state") and not jur_data.get("state"):
@@ -675,12 +710,17 @@ Respond ONLY with a valid compact JSON object matching this structure:
         )
 
         # Merge known deterministic facts into universal_state
-        if extracted_facts.get("employment_type"):
-            universal_state.domain_extensions.setdefault("employment", {})["employment_type"] = extracted_facts["employment_type"]
-            universal_state.known_facts.append({"fact": f"employment_type: {extracted_facts['employment_type']}", "source": "user_statement"})
-        if extracted_facts.get("written_contract"):
-            universal_state.domain_extensions.setdefault("employment", {})["written_contract"] = extracted_facts["written_contract"]
-            universal_state.known_facts.append({"fact": f"written_contract: {extracted_facts['written_contract']}", "source": "user_statement"})
+        if domain == "employment":
+            if extracted_facts.get("employment_type"):
+                universal_state.domain_extensions.setdefault("employment", {})["employment_type"] = extracted_facts["employment_type"]
+                universal_state.known_facts.append({"fact": f"employment_type: {extracted_facts['employment_type']}", "source": "user_statement"})
+            if extracted_facts.get("written_contract"):
+                universal_state.domain_extensions.setdefault("employment", {})["written_contract"] = extracted_facts["written_contract"]
+                universal_state.known_facts.append({"fact": f"written_contract: {extracted_facts['written_contract']}", "source": "user_statement"})
+        elif is_new_issue:
+            universal_state.domain_extensions = {}
+            universal_state.known_facts = []
+
         if extracted_facts.get("amount"):
             universal_state.financial.amount = extracted_facts["amount"]
         if extracted_facts.get("amount_raw"):
@@ -724,17 +764,29 @@ Respond ONLY with a valid compact JSON object matching this structure:
                 or extracted_facts.get("city")
             )
 
+            tech_corporate_keywords = [
+                "private company", "private firm", "private tech", "startup", "mnc", "corporate",
+                "tech firm", "it company", "government", "govt", "psu", "civil servant", "public sector",
+                "google", "microsoft", "amazon", "apple", "meta", "infosys", "tcs", "wipro", "accenture",
+                "cognizant", "ibm", "deloitte", "flipkart", "swiggy", "zomato", "uber", "ola", "firm",
+                "office", "enterprise", "ltd", "pvt"
+            ]
             has_employment_type = bool(
                 extracted_facts.get("employment_type")
                 or (isinstance(universal_state.domain_extensions, dict) and universal_state.domain_extensions.get("employment", {}).get("employment_type"))
-                or any(
-                    kw in all_user_text.lower()
-                    for kw in [
-                        "private company", "private firm", "private tech", "startup", "mnc", "corporate",
-                        "tech firm", "it company", "government", "govt", "psu", "civil servant", "public sector"
-                    ]
-                )
+                or any(kw in all_user_text.lower() for kw in tech_corporate_keywords)
             )
+            if domain == "employment" and not extracted_facts.get("employment_type") and any(
+                kw in all_user_text.lower() for kw in [
+                    "google", "microsoft", "amazon", "apple", "meta", "infosys", "tcs", "wipro",
+                    "accenture", "cognizant", "ibm", "deloitte", "flipkart", "swiggy", "zomato",
+                    "uber", "ola", "startup", "mnc", "corporate", "private", "tech firm", "it company"
+                ]
+            ):
+                extracted_facts["employment_type"] = "private"
+                universal_state.domain_extensions.setdefault("employment", {})["employment_type"] = "private"
+                universal_state.known_facts.append({"fact": "employment_type: private", "source": "user_statement"})
+                has_employment_type = True
 
             # Re-evaluate missing facts with updated universal_state and user messages
             missing_after = self._fallback_engine.evaluate_missing_facts(universal_state, user_messages_text=all_user_text)
@@ -751,7 +803,8 @@ Respond ONLY with a valid compact JSON object matching this structure:
             ]
 
             # PROGRAMMATIC READINESS & ADVOCATE JURISDICTION GATE:
-            has_given_advice = bool(state.legal_qa_results or getattr(state, "stage", None) == "answered")
+            # Note: If this is a newly introduced legal issue, advice has NOT been given for it yet!
+            has_given_advice = bool((state.legal_qa_results or getattr(state, "stage", None) == "answered") and not is_new_issue)
 
             if has_given_advice:
                 conversational_reply = parsed.get("direct_legal_answer") or parsed.get("followup_question") or followup
@@ -785,7 +838,7 @@ Respond ONLY with a valid compact JSON object matching this structure:
                 elif (
                     universal_state.case_domain == "employment"
                     and user_msg_count <= 3
-                    and not any(w in all_user_text.lower() for w in ["salary", "dues", "pay", "lakh", "crore", "thousand", "rs", "₹", "gratuity", "wage", "compensation", "death", "injury", "stroke", "selection", "interview"])
+                    and not any(w in all_user_text.lower() for w in ["salary", "dues", "pay", "lakh", "crore", "thousand", "rs", "₹", "gratuity", "wage", "compensation", "death", "injury", "stroke", "selection", "interview", "severance"])
                     and not universal_state.financial.amount
                     and not universal_state.financial.amount_raw
                     and not universal_state.financial.dues_period
@@ -897,6 +950,7 @@ Respond ONLY with a valid compact JSON object matching this structure:
             synthesized_query=synthesized_query,
             case_state=universal_state.model_dump(),
             direct_legal_answer=direct_legal_answer,
+            is_new_legal_issue=is_new_issue,
         )
 
     # Backward compatibility alias
