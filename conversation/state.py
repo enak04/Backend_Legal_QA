@@ -28,6 +28,7 @@ from database.models import (
     Message,
     MessageRole,
 )
+from services.language import normalize_language_code
 
 
 def add_user_message(state: ConversationRecord, content: str) -> None:
@@ -124,10 +125,11 @@ def set_universal_case_state(record: ConversationRecord, case_state: UniversalCa
 
 def set_language(record: ConversationRecord, language: str) -> None:
     """Set the conversation language across record and case state."""
-    record.language = language
-    record.facts["language"] = language
+    normalized = normalize_language_code(language, default="en")
+    record.language = normalized
+    record.facts["language"] = normalized
     case_state = get_universal_case_state(record)
-    case_state.language = language
+    case_state.language = normalized
     record.facts["case_state"] = case_state.model_dump()
 
 

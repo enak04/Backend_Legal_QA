@@ -50,6 +50,10 @@ class TestLanguageDetection:
         tamil_text = "என் முதலாளி என்னை எந்த அறிவிப்பும் இன்றி வேலையிலிருந்து நீக்கிவிட்டார்"
         assert detect_language(tamil_text) == "ta"
 
+    def test_detect_perso_arabic_script(self):
+        perso_arabic_text = "مجھے اپری نوکری سے نکال دیا گیا ہے"
+        assert detect_language(perso_arabic_text) == "hi"
+
     def test_detect_english(self):
         english_text = "My employer wrongfully terminated me without notice pay in Bengaluru"
         assert detect_language(english_text) == "en"

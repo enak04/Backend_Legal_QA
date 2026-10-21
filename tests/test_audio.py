@@ -48,6 +48,50 @@ class TestVoiceService:
                 language="hi",
                 preferred_provider="iitm",
             )
+            assert res["text"] == "मेरे नियोक्ता ने मुझे निकाल दिया"
+            assert res["language"] == "hi"
+            assert res["provider"] == "whisper"
+
+    async def test_transcribe_audio_auto_detection_with_perso_arabic_urdu_hindi(self):
+        mock_openai = AsyncMock()
+        mock_transcription = MagicMock()
+        mock_transcription.text = "مجھے اپری نوکری سے نکال دیا گیا ہے"
+        mock_openai.audio.transcriptions.create.return_value = mock_transcription
+
+        service = VoiceService(openai_client=mock_openai)
+        fake_audio = b"RIFF....WAVE"
+
+        res = await service.transcribe_audio(
+            fake_audio,
+            filename="test.wav",
+            language="auto",
+        )
+        assert res["text"] == "مجھے اپری نوکری سے نکال دیا گیا ہے"
+        assert res["language"] == "hi"
+        assert res["provider"] == "whisper"
+
+        # Verify language was None for Whisper auto-detection
+        call_kwargs = mock_openai.audio.transcriptions.create.call_args.kwargs
+        assert "language" not in call_kwargs
+
+    async def test_transcribe_audio_auto_detection_with_devanagari_hindi(self):
+        mock_openai = AsyncMock()
+        mock_transcription = MagicMock()
+        mock_transcription.text = "मुझे अपनी नौकरी से निकाल दिया गया है"
+        mock_openai.audio.transcriptions.create.return_value = mock_transcription
+
+        service = VoiceService(openai_client=mock_openai)
+        fake_audio = b"RIFF....WAVE"
+
+        res = await service.transcribe_audio(
+            fake_audio,
+            filename="test.wav",
+            language=None,
+        )
+        assert res["text"] == "मुझे अपनी नौकरी से निकाल दिया गया है"
+        assert res["language"] == "hi"
+        assert res["provider"] == "whisper"
+
     async def test_transcribe_audio_telugu_whisper_fallback_omits_unsupported_language(self):
         mock_openai = AsyncMock()
         mock_transcription = MagicMock()

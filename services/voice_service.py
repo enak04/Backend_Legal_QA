@@ -171,8 +171,48 @@ class VoiceService:
                 "provider": "iitm" | "whisper"
             }
         """
-        target_lang = normalize_language_code(language, default="te" if preferred_provider == "iitm" else "en")
+        is_auto = not language or language.strip().lower() in ("auto", "none", "")
         errors: list[str] = []
+
+        # When auto-detection is requested, Whisper is the primary provider because
+        # it natively detects speech language across 99 languages.
+        if is_auto:
+            if self._openai_client:
+                try:
+                    text = await self.transcribe_with_whisper(
+                        audio_bytes,
+                        filename=filename,
+                        language=None,
+                    )
+                    if text:
+                        detected = detect_language(text, default="hi")
+                        return {
+                            "text": text,
+                            "language": detected,
+                            "language_name": get_language_name(detected),
+                            "provider": "whisper",
+                        }
+                except Exception as exc:
+                    logger.warning("Whisper auto-detection failed (%s); trying fallback.", exc)
+                    errors.append(f"Whisper auto-detect: {exc}")
+
+            # Fallback if Whisper is unavailable in auto mode
+            try:
+                text = await self.transcribe_with_iitm(audio_bytes, filename=filename, language="hi")
+                if text:
+                    detected = detect_language(text, default="hi")
+                    return {
+                        "text": text,
+                        "language": detected,
+                        "language_name": get_language_name(detected),
+                        "provider": "iitm",
+                    }
+            except Exception as exc:
+                errors.append(f"IITM auto fallback: {exc}")
+
+            raise RuntimeError(f"All ASR providers failed to transcribe audio in auto mode. Errors: {'; '.join(errors)}")
+
+        target_lang = normalize_language_code(language, default="en")
 
         # 1. Try preferred provider first
         if preferred_provider == "iitm" or is_indic_language(target_lang):

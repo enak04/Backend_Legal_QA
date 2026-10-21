@@ -35,6 +35,7 @@ _SCRIPT_PATTERNS: list[tuple[re.Pattern, str]] = [
     (re.compile(r"[\u0A00-\u0A7F]"), "pa"),  # Gurmukhi / Punjabi
     (re.compile(r"[\u0B00-\u0B7F]"), "or"),  # Odia
     (re.compile(r"[\u0900-\u097F]"), "hi"),  # Devanagari (Hindi / Marathi)
+    (re.compile(r"[\u0600-\u06FF\u0750-\u077F]"), "hi"),  # Perso-Arabic (Urdu/Hindi)
 ]
 
 # Common Latin-script transliterated Indic tokens
@@ -124,8 +125,9 @@ def resolve_turn_language(text: str, current_lang: str = "en") -> str:
        retain the current conversation language so flow is not disrupted.
     4. If user writes a longer English message (> 3 words) without Indic script/tokens, switch to English.
     """
+    valid_current = normalize_language_code(current_lang, default="en")
     if not text or not text.strip():
-        return current_lang or "en"
+        return valid_current
 
     cleaned = text.strip()
 
@@ -147,8 +149,8 @@ def resolve_turn_language(text: str, current_lang: str = "en") -> str:
         return "ta"
 
     # 3. Short answers (e.g., "Yes", "2 months", "Bangalore") retain active regional language
-    if len(words) <= 3 and current_lang and current_lang != "en":
-        return current_lang
+    if len(words) <= 3 and valid_current != "en":
+        return valid_current
 
     # 4. Otherwise user wrote in English
     return "en"

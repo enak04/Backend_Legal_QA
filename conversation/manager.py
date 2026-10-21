@@ -102,9 +102,10 @@ class ConversationManager:
 
     async def create_conversation(self, mode: Mode, language: str = "en") -> ConversationRecord:
         """Start a new conversation with the given mode and language."""
-        record = ConversationRecord(mode=mode, language=language)
+        norm_lang = normalize_language_code(language, default="en")
+        record = ConversationRecord(mode=mode, language=norm_lang)
         # Initialize universal case state
-        initial_state = UniversalCaseState(language=language)
+        initial_state = UniversalCaseState(language=norm_lang)
         set_universal_case_state(record, initial_state)
         return await self._repo.create(record)
 
