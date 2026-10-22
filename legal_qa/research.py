@@ -323,6 +323,30 @@ STATUTORY_CATALOG: list[dict[str, Any]] = [
         "applicability_conditions": ["information held by or under control of any public authority"],
         "key_excerpt": "A person, who desires to obtain any information under this Act, shall make a request in writing to the Public Information Officer. The PIO shall provide information within thirty days of receipt.",
     },
+
+    # ── Healthcare & Disability Rights ─────────────────────────
+    {
+        "source": "Mental Healthcare Act, 2017",
+        "authority_type": "statute",
+        "domain": "healthcare",
+        "jurisdiction": "Central / India",
+        "provision": "Section 18 & Section 21",
+        "status": "current",
+        "relevance": "Guarantees right to access mental healthcare and prohibits discrimination on the ground of mental illness in any service, establishment, or employment; protects rights to dignity, privacy, and protection from cruel or degrading treatment.",
+        "applicability_conditions": ["person with mental illness or mental health condition", "denial of healthcare or discrimination in services, employment or society"],
+        "key_excerpt": "Every person with mental illness shall have a right to live with dignity and there shall be no discrimination on any basis including on the grounds of mental illness. Every person with mental illness shall have a right to access mental healthcare and treatment from mental health services funded or run by government.",
+    },
+    {
+        "source": "Rights of Persons with Disabilities Act, 2016",
+        "authority_type": "statute",
+        "domain": "disability",
+        "jurisdiction": "Central / India",
+        "provision": "Section 3 & Section 20",
+        "status": "current",
+        "relevance": "Mandates non-discrimination in employment and guarantees reasonable accommodation and equal protection for persons with disabilities, which explicitly includes mental illness.",
+        "applicability_conditions": ["person with specified disability including mental illness", "discrimination in employment or public establishments"],
+        "key_excerpt": "No government establishment shall discriminate against any person with disability in any matter relating to employment, and no promotion shall be denied to a person merely on the ground of disability.",
+    },
 ]
 
 
@@ -349,7 +373,8 @@ class LegalResearchLayer:
         state = (case_state.jurisdiction.state or "").lower()
         city = (case_state.jurisdiction.city or "").lower()
         active_issue_texts = [i.issue.lower() for i in case_state.issues if i.status != "ruled_out"]
-        all_text = f"{raw_domain} {' '.join(active_issue_texts)} {state} {city} {case_state.user_goal or ''}".lower()
+        facts_text = " ".join([f.get("fact", "") if isinstance(f, dict) else str(f) for f in case_state.known_facts]).lower()
+        all_text = f"{raw_domain} {' '.join(active_issue_texts)} {facts_text} {state} {city} {case_state.user_goal or ''}".lower()
 
         # Canonical domain normalization
         target_domain = None
@@ -369,6 +394,10 @@ class LegalResearchLayer:
             target_domain = "contract"
         elif any(w in raw_domain for w in ["govt", "government", "admin", "rti"]):
             target_domain = "government"
+        elif any(w in raw_domain or w in all_text for w in ["mental", "psychiatr", "health"]):
+            target_domain = "healthcare"
+        elif any(w in raw_domain or w in all_text for w in ["disabil"]):
+            target_domain = "disability"
 
         # Government employment check
         is_govt = False
@@ -400,6 +429,27 @@ class LegalResearchLayer:
             if target_domain and item_domain and item_domain != target_domain:
                 continue
 
+            # If target_domain is NOT established, do not match domain-specific statutes
+            # unless the facts/issues/text explicitly mention keywords of that domain or statute
+            if not target_domain and item_domain:
+                domain_matched = (
+                    item_domain in all_text
+                    or any(w in all_text for w in item_domain.split() if len(w) > 3)
+                    or any(
+                        w in item.get("source", "").lower() or w in item.get("relevance", "").lower() or w in item.get("key_excerpt", "").lower()
+                        for issue in active_issue_texts
+                        for w in issue.split()
+                        if len(w) > 3
+                    )
+                    or any(
+                        w in item.get("source", "").lower() or w in item.get("relevance", "").lower()
+                        for w in all_text.split()
+                        if len(w) > 4
+                    )
+                )
+                if not domain_matched:
+                    continue
+
             score = 0.0
             item_source = item["source"].lower()
             item_jur = item["jurisdiction"].lower()
@@ -425,7 +475,8 @@ class LegalResearchLayer:
                     # Specific to another state (e.g. Karnataka law for Maharashtra dispute)
                     score -= 10.0
             else:
-                score += 2.0  # Central statutes applicable pan-India
+                if target_domain or score > 0:
+                    score += 2.0  # Central statutes applicable pan-India
 
             # Domain affinity bonus
             if target_domain and item_domain == target_domain:
@@ -437,6 +488,11 @@ class LegalResearchLayer:
                     if len(word) > 3:
                         if word in item_relevance or word in item_excerpt or word in item_source:
                             score += 2.0
+
+            # Direct text keyword matching (for unclassified or non-formalized queries)
+            for word in all_text.split():
+                if len(word) > 4 and (word in item_relevance or word in item_excerpt or word in item_source):
+                    score += 1.5
 
             if score > 0:
                 scored.append((score, item))
@@ -468,13 +524,26 @@ class LegalResearchLayer:
         """
         Process past cases returned by Legal_QA into structured precedents.
         Enforces that precedents are persuasive context, NOT user facts.
+        Filters out precedents that clearly contradict the active dispute domain.
         """
         precedents: list[RetrievedAuthority] = []
-        current_state = (case_state.jurisdiction.state or "").lower()
+        raw_domain = (case_state.case_domain or case_state.primary_category or "").lower()
+        active_issue_texts = [i.issue.lower() for i in case_state.issues if i.status != "ruled_out"]
+        facts_text = " ".join([f.get("fact", "") if isinstance(f, dict) else str(f) for f in case_state.known_facts]).lower()
+        context_text = f"{raw_domain} {' '.join(active_issue_texts)} {facts_text} {case_state.summary or ''} {case_state.user_goal or ''}".lower()
+
+        is_employment_query = any(w in context_text for w in ["employ", "job", "salary", "wage", "boss", "terminat", "work", "resign"])
 
         for c in cases:
             q = c.get("question", "")
             ans = c.get("answer", "")
+            case_text = f"{q} {ans}".lower()
+
+            # If the user's inquiry has nothing to do with employment/labor, do not inject
+            # employment-specific precedents (e.g. resignation, notice period, salary dues).
+            is_employment_case = any(w in case_text for w in ["resign", "notice period", "furlough", "employment agreement", "salary", "wages", "retrench"])
+            if is_employment_case and not is_employment_query:
+                continue
 
             # Detect jurisdiction mentioned in precedent
             prec_jur = "India"

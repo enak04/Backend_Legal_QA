@@ -382,6 +382,7 @@ class ConversationManager:
         legal_assessment = self._answer_generator.build_assessment(
             case_state=case_state,
             authorities=all_authorities,
+            mode=state.mode,
         )
         active_lang = state.language or "en"
         original_answer: str | None = qa_response.get("answer") or intake_result.direct_legal_answer
@@ -394,6 +395,7 @@ class ConversationManager:
                 authorities=all_authorities,
                 base_qa_answer=qa_response.get("answer") or intake_result.direct_legal_answer,
                 language=active_lang,
+                mode=state.mode,
             )
             if gen_assessment:
                 legal_assessment = gen_assessment
@@ -404,6 +406,7 @@ class ConversationManager:
                     authorities=all_authorities,
                     base_qa_answer=None,
                     language="en",
+                    mode=state.mode,
                 )
                 original_answer = english_direct
         elif self._answer_generator.is_configured and not qa_response.get("answer"):
@@ -412,6 +415,7 @@ class ConversationManager:
                 authorities=all_authorities,
                 base_qa_answer=intake_result.direct_legal_answer,
                 language=active_lang,
+                mode=state.mode,
             )
             if gen_assessment:
                 legal_assessment = gen_assessment
@@ -429,6 +433,7 @@ class ConversationManager:
                 authorities=all_authorities,
                 base_qa_answer=None,
                 language=active_lang,
+                mode=state.mode,
             )
             if gen_assessment:
                 legal_assessment = gen_assessment

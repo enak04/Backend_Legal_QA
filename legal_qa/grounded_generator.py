@@ -67,6 +67,37 @@ You are a senior Indian advocate providing clear, actionable, and empathetic leg
 """
 
 
+INFORMATIVE_SYSTEM_PROMPT = """\
+You are an expert Indian legal scholar and advocate providing clear, accurate, and comprehensive legal information in response to a user's informative inquiry.
+
+### TONE & STYLE
+- Address the user respectfully and directly in second person ("You", "Your rights").
+- Provide objective, authoritative, and helpful legal explanation of the law, statutory provisions, rights, and restrictions.
+- Be CONCISE and focused (under 450 words).
+- Format with clean Markdown headings and bullet points.
+
+### STRUCTURE (use these exact headings for Informative Guidance)
+1. **Understanding Your Inquiry** — Brief 1-2 sentence acknowledgment of the legal topic or question asked.
+2. **Key Legal Framework & Applicable Laws** — 2-3 specific Indian acts/sections governing this topic (e.g. Mental Healthcare Act, 2017, Rights of Persons with Disabilities Act, 2016).
+3. **Rights & Legal Protections** — Clear explanation of statutory rights, non-discrimination provisions, and entitlements.
+4. **Restrictions, Safeguards & Limitations** — Any legal restrictions, boundaries, or procedures mandated by law.
+5. **Authorities & Redressal Bodies** — Statutory bodies or authorities responsible for oversight and grievance redressal (e.g., State Mental Health Authority, Legal Services Authority).
+6. **Next Steps & Practical Guidance** — Empathetic, practical advice (e.g., medical consultation, approaching legal aid or specialized advisors).
+
+### RULES
+- Ground your answer strictly in the established legal topic and the provided Base Legal Research Answer / Applicable Statutes.
+- Do NOT invent fictional labor/wage claims, salary slips, or employer dispute notices if the inquiry is about a general or civil legal topic like mental health, constitutional rights, or family law.
+- Do NOT cite statutes that do not pertain to the established topic.
+
+### MULTILINGUAL GUIDANCE
+- If a Target Client Language is specified (e.g., Telugu, Hindi, Tamil, Kannada, Marathi, Bengali, Gujarati, etc.):
+  * Formulate the entire informative guidance directly in that language.
+  * Translate and adapt the substantive legal principles accurately into clear, natural vernacular.
+  * Maintain official Indian statutory titles bilingually (e.g. native script followed by official English Act name in parentheses, such as "మానసిక ఆరోగ్య సంరక్షణ చట్టం, 2017 (Mental Healthcare Act, 2017)").
+  * If the client communicates in English, respond in English.
+"""
+
+
 class GroundedLegalAnswerGenerator:
     """
     Generates a natural, LLM-powered legal answer plus a structured
@@ -86,9 +117,10 @@ class GroundedLegalAnswerGenerator:
         self,
         case_state: UniversalCaseState,
         authorities: list[RetrievedAuthority],
+        mode: Any = None,
     ) -> LegalAssessment:
         """Build the structured LegalAssessment metadata."""
-        return self._build_assessment(case_state, authorities)
+        return self._build_assessment(case_state, authorities, mode=mode)
 
     async def generate_answer(
         self,
@@ -96,41 +128,44 @@ class GroundedLegalAnswerGenerator:
         authorities: list[RetrievedAuthority],
         base_qa_answer: str | None = None,
         language: str | None = None,
+        mode: Any = None,
     ) -> tuple[str, LegalAssessment]:
         """
         Synthesize a concise, lawyer-like legal answer via LLM and return
         both the user-facing text and the structured LegalAssessment.
         """
         # 1. Build the structured LegalAssessment (deterministic — always computed)
-        assessment = self._build_assessment(case_state, authorities)
+        assessment = self._build_assessment(case_state, authorities, mode=mode)
 
         # 2. Build the context message for the LLM
-        context = self._build_context_message(case_state, authorities, base_qa_answer, language=language)
+        context = self._build_context_message(case_state, authorities, base_qa_answer, language=language, mode=mode)
 
         # 3. Call LLM to generate natural answer
         if self.is_configured:
             try:
-                answer = await self._call_llm(context)
+                answer = await self._call_llm(context, mode=mode)
             except Exception as exc:
                 logger.warning(
                     "LLM answer synthesis failed (%s); falling back to template.",
                     exc,
                 )
-                answer = self._fallback_template(case_state, authorities, assessment, base_qa_answer)
+                answer = self._fallback_template(case_state, authorities, assessment, base_qa_answer, mode=mode)
         else:
             logger.info("No OpenAI client configured for answer generator; using template fallback.")
-            answer = self._fallback_template(case_state, authorities, assessment, base_qa_answer)
+            answer = self._fallback_template(case_state, authorities, assessment, base_qa_answer, mode=mode)
 
         return answer, assessment
 
     # ── LLM Call ──────────────────────────────────────────────────
 
-    async def _call_llm(self, context_message: str) -> str:
+    async def _call_llm(self, context_message: str, mode: Any = None) -> str:
         """Make the actual OpenAI chat completion call."""
+        is_informative = str(mode).lower() in ("informative", "mode.informative")
+        sys_prompt = INFORMATIVE_SYSTEM_PROMPT if is_informative else ANSWER_SYSTEM_PROMPT
         response = await self._client.chat.completions.create(
             model=self._model,
             messages=[
-                {"role": "system", "content": ANSWER_SYSTEM_PROMPT},
+                {"role": "system", "content": sys_prompt},
                 {"role": "user", "content": context_message},
             ],
             temperature=0.3,
@@ -146,12 +181,14 @@ class GroundedLegalAnswerGenerator:
         authorities: list[RetrievedAuthority],
         base_qa_answer: str | None = None,
         language: str | None = None,
+        mode: Any = None,
     ) -> str:
         """
         Build a structured context message that gives the LLM everything
         it needs to produce a grounded answer.
         """
         parts: list[str] = []
+        is_informative = str(mode).lower() in ("informative", "mode.informative")
 
         # Target language
         lang = language or getattr(state, "language", None) or "en"
@@ -163,6 +200,14 @@ class GroundedLegalAnswerGenerator:
                 f"IMPORTANT: The client communicates in {lang_name}. Synthesize the entire consultation "
                 f"guidance and action plan in clear, natural {lang_name}. Keep official statutory and act names "
                 f"bilingual (e.g. native script followed by official English Act name in parentheses)."
+            )
+
+        if is_informative:
+            parts.append(
+                "## INFORMATIVE LEGAL CONSULTATION:\n"
+                "The user is asking an informative/conceptual question. Explain the applicable Indian law, "
+                "statutory rights, non-discrimination protections, restrictions, and authorities objectively and clearly. "
+                "Do NOT construct employer demand notices, wage slips, or litigation dispute steps unless explicitly asked."
             )
 
         # Client facts
@@ -231,9 +276,13 @@ class GroundedLegalAnswerGenerator:
             for p in precedents:
                 parts.append(f"  - {p.source} ({p.jurisdiction}): {p.key_excerpt[:200]}")
 
-        # Base QA model answer (if available)
+        # Base QA model answer (if available) - ground truth
         if base_qa_answer:
-            parts.append(f"\n## BASE MODEL GUIDANCE\n{base_qa_answer[:500]}")
+            parts.append(
+                f"\n## BASE LEGAL RESEARCH ANSWER (GROUND TRUTH):\n{base_qa_answer}\n"
+                f"IMPORTANT: Ensure your legal guidance faithfully conveys the substance of this answer, "
+                f"adapting it clearly into the target client language without introducing unrelated statutory claims."
+            )
 
         # Actions already taken
         if state.actions_already_taken:
@@ -252,7 +301,7 @@ class GroundedLegalAnswerGenerator:
         parts.append(
             "\n## INSTRUCTION\n"
             "Based on the above, provide your legal guidance to the client. "
-            "Be concise, direct, and actionable. Only cite statutes that ACTUALLY "
+            "Be concise, direct, and authoritative. Only cite statutes that ACTUALLY "
             "apply to the established facts. Skip irrelevant authorities."
         )
 
@@ -264,8 +313,10 @@ class GroundedLegalAnswerGenerator:
         self,
         state: UniversalCaseState,
         authorities: list[RetrievedAuthority],
+        mode: Any = None,
     ) -> LegalAssessment:
         """Build the structured LegalAssessment for API metadata."""
+        is_informative = str(mode).lower() in ("informative", "mode.informative")
         domain = state.case_domain or state.primary_category or ""
         if not domain or domain.lower() in ("general", "general legal dispute"):
             for iss in state.issues:
@@ -273,13 +324,18 @@ class GroundedLegalAnswerGenerator:
                     domain = iss.domain
                     break
         if not domain or domain.lower() in ("general", "general legal dispute"):
-            issue_text = " ".join([i.issue for i in state.issues] + [state.case_type or "", state.summary or ""]).lower()
+            facts_text = " ".join([f.get("fact", "") if isinstance(f, dict) else str(f) for f in state.known_facts]).lower()
+            issue_text = " ".join([i.issue for i in state.issues] + [state.case_type or "", state.summary or "", facts_text]).lower()
             if any(w in issue_text for w in ["fired", "terminat", "salary", "wage", "employ"]):
                 domain = "employment"
             elif any(w in issue_text for w in ["rent", "evict", "tenant", "landlord", "flat", "property"]):
                 domain = "property"
             elif any(w in issue_text for w in ["consumer", "defect", "warranty", "refund"]):
                 domain = "consumer"
+            elif any(w in issue_text for w in ["mental", "psychiatr", "health"]):
+                domain = "Healthcare & Mental Health"
+            elif any(w in issue_text for w in ["disabil"]):
+                domain = "Disability Rights"
             else:
                 domain = "General Legal Dispute"
 
@@ -327,10 +383,10 @@ class GroundedLegalAnswerGenerator:
                     break
 
         # Evidence & document assessment
-        evidence_assessment = self._build_evidence_assessment(state, domain, is_govt)
+        evidence_assessment = self._build_evidence_assessment(state, domain, is_govt, is_informative=is_informative)
 
         # Action plan
-        action_plan = self._build_action_plan(state, domain, is_govt)
+        action_plan = self._build_action_plan(state, domain, is_govt, is_informative=is_informative)
 
         return LegalAssessment(
             summary=facts_summary,
@@ -349,6 +405,7 @@ class GroundedLegalAnswerGenerator:
         state: UniversalCaseState,
         domain: str,
         is_govt: bool = False,
+        is_informative: bool = False,
     ) -> dict[str, Any]:
         """
         Deep evidentiary analysis:
@@ -359,7 +416,15 @@ class GroundedLegalAnswerGenerator:
         d = domain.lower()
         domain_def = domain_registry.get(domain)
 
-        if is_govt and ("employment" in d or "salary" in d):
+        if is_informative:
+            required_docs = [
+                "Relevant identity documents or disability/medical certificates (if applicable)",
+                "Correspondence or records of any decision or service denial",
+            ]
+            fallback_strategy = [
+                "Maintain copies of medical evaluations, official correspondence, and written representations.",
+            ]
+        elif is_govt and ("employment" in d or "salary" in d):
             required_docs = [
                 "Appointment Letter / Service Confirmation Order",
                 "Official Termination / Dismissal Order or Show Cause Notice",
@@ -371,6 +436,14 @@ class GroundedLegalAnswerGenerator:
                 "If official termination order or inquiry findings are withheld: File an urgent application under Section 6 of the Right to Information (RTI) Act, 2005 requesting certified copies of the termination order, inquiry report, and file notings.",
                 "If appointment order is missing: Use Bank Account salary credit statements, GPF/NPS statement, Service Book extract, and Employee ID Card as secondary proof of government employment.",
                 "If unpaid dues calculation is disputed: Submit a requisition under RTI for the LPC (Last Pay Certificate) and due-drawn statement from the DDO (Drawing and Disbursing Officer).",
+            ]
+        elif "healthcare" in d or "mental" in d or "disabil" in d:
+            required_docs = [
+                "Medical evaluation / diagnosis documentation by a registered medical practitioner",
+                "Official communications or notifications regarding denial of services or accommodation",
+            ]
+            fallback_strategy = [
+                "Request written reasons for any adverse administrative action under the Rights of Persons with Disabilities Act, 2016.",
             ]
         elif domain_def and domain_def.required_documents:
             required_docs = list(domain_def.required_documents)
@@ -397,8 +470,16 @@ class GroundedLegalAnswerGenerator:
         state: UniversalCaseState,
         domain: str,
         is_govt: bool = False,
+        is_informative: bool = False,
     ) -> list[str]:
         """Build a prioritised action plan based on domain and government status."""
+        if is_informative:
+            return [
+                "1. Review your statutory rights and protections under the applicable Indian legislation.",
+                "2. If rights are infringed, approach the designated statutory authority or regulatory commission.",
+                "3. Consult a specialized advocate or legal aid authority for individual case representation.",
+            ]
+
         taken_lower = [a.action.lower() for a in state.actions_already_taken]
         plan: list[str] = []
         step = 1
@@ -435,6 +516,13 @@ class GroundedLegalAnswerGenerator:
             step += 1
             plan.append(f"{step}. File consumer complaint on e-Daakhil (edaakhil.nic.in).")
             step += 1
+        elif "healthcare" in d or "mental" in d or "disabil" in d:
+            plan.append(f"{step}. Review rights and non-discrimination guarantees under the Mental Healthcare Act, 2017 / RPwD Act, 2016.")
+            step += 1
+            plan.append(f"{step}. If facing discrimination or denial of care, approach the State Mental Health Authority or State Commissioner for Persons with Disabilities.")
+            step += 1
+            plan.append(f"{step}. Seek assistance from the District Legal Services Authority (DLSA) for free legal aid and representation.")
+            step += 1
         else:
             plan.append(f"{step}. Serve a formal statutory demand notice via registered post.")
             step += 1
@@ -451,11 +539,16 @@ class GroundedLegalAnswerGenerator:
         authorities: list[RetrievedAuthority],
         assessment: LegalAssessment,
         base_qa_answer: str | None = None,
+        mode: Any = None,
     ) -> str:
         """
         Produce a reasonable text answer without an LLM call.
         Used when OpenAI is not configured or the call fails.
         """
+        is_informative = str(mode).lower() in ("informative", "mode.informative")
+        if is_informative and base_qa_answer:
+            return base_qa_answer
+
         parts: list[str] = []
 
         # Understanding

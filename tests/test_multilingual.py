@@ -309,4 +309,99 @@ class TestMultilingualManagerFlow:
         facts = extract_facts("na company notice ivvakunda job lo nundi tisesindi, nenu em cheyali")
         assert "employment_type" not in facts
 
+    async def test_informative_mental_health_query_authorities_isolation(self):
+        from conversation.cases.models import UniversalCaseState
+        from legal_qa.research import legal_research_layer
+
+        case_state = UniversalCaseState(
+            known_facts=[{"fact": "mental illness tho badha padutuna vallaki yelanti nishedalu unnay"}],
+            language="te",
+        )
+        authorities = legal_research_layer.research_authorities(case_state)
+        auth_sources = [a.source for a in authorities]
+
+        # Mental Healthcare Act should be matched
+        assert any("Mental Healthcare Act" in s for s in auth_sources)
+        # Fallback labor laws must NEVER be returned for mental health inquiries
+        assert not any("Payment of Wages Act" in s for s in auth_sources)
+        assert not any("Industrial Disputes Act" in s for s in auth_sources)
+        assert not any("Payment of Gratuity Act" in s for s in auth_sources)
+
+    async def test_informative_mental_health_precedents_filtering(self):
+        from conversation.cases.models import UniversalCaseState
+        from legal_qa.research import legal_research_layer
+
+        case_state = UniversalCaseState(
+            known_facts=[{"fact": "mental illness tho badha padutuna vallaki yelanti nishedalu unnay"}],
+            language="te",
+        )
+        mock_cases = [
+            {
+                "question": "Regional manager ask 1 Healthy policy for Resign acceptance (East Godavari)",
+                "answer": "As per employment agreement, notice period applies.",
+            },
+            {
+                "question": "Is Furlough legal in India for corporate MNCs?",
+                "answer": "Furlough is legal in ordinary scenarios.",
+            },
+        ]
+        precedents = legal_research_layer.process_retrieved_cases(mock_cases, case_state)
+        # Both employment cases should be filtered out because the inquiry is about mental health
+        assert len(precedents) == 0
+
+    async def test_informative_mode_passed_to_answer_generator(self, tmp_path):
+        from unittest.mock import AsyncMock, MagicMock
+        from conversation.manager import ConversationManager
+        from database.models import Mode
+        from legal_qa.client import LegalQAClient
+        from legal_qa.grounded_generator import GroundedLegalAnswerGenerator
+        from conversation.cases.models import LegalAssessment
+        from database.repository import SQLiteConversationRepository
+
+        db_path = str(tmp_path / "test_info.db")
+        repo = SQLiteConversationRepository(db_path)
+        await repo.initialize()
+        qa_client = AsyncMock(spec=LegalQAClient)
+        qa_client.predict.return_value = {
+            "answer": "Mental Healthcare Act, 2017 provides comprehensive rights and non-discrimination.",
+            "reasoning_chain": ["MHA_3", "MHA_21"],
+            "retrieved_cases": [],
+        }
+
+        mock_intake = AsyncMock()
+        mock_intake.analyze_turn.return_value = MagicMock(
+            extracted_facts={},
+            case_state={"case_domain": "healthcare", "jurisdiction": {}},
+            is_ready_for_qa=True,
+            followup_question=None,
+            synthesized_query="mental health rights",
+            direct_legal_answer="Mental Healthcare Act, 2017 provides comprehensive rights.",
+            is_new_legal_issue=False,
+        )
+
+        mock_generator = AsyncMock(spec=GroundedLegalAnswerGenerator)
+        mock_generator.is_configured = True
+        mock_generator.build_assessment.return_value = LegalAssessment()
+        mock_generator.generate_answer.return_value = (
+            "## మానసిక ఆరోగ్య హక్కులు\nచట్టం వివక్షను నిషేధిస్తుంది.",
+            LegalAssessment(),
+        )
+
+        manager = ConversationManager(
+            repository=repo,
+            legal_qa_client=qa_client,
+            intake_service=mock_intake,
+            answer_generator=mock_generator,
+        )
+
+        record = await manager.create_conversation(Mode.INFORMATIVE, language="te")
+        result = await manager.process_message(record.conversation_id, "mental health rights")
+
+        assert mock_generator.generate_answer.called
+        call_kwargs = mock_generator.generate_answer.call_args.kwargs
+        assert call_kwargs.get("language") == "te"
+        assert call_kwargs.get("mode") == Mode.INFORMATIVE
+        assert result["original_answer"] == "Mental Healthcare Act, 2017 provides comprehensive rights and non-discrimination."
+
+
 
