@@ -403,5 +403,61 @@ class TestMultilingualManagerFlow:
         assert call_kwargs.get("mode") == Mode.INFORMATIVE
         assert result["original_answer"] == "Mental Healthcare Act, 2017 provides comprehensive rights and non-discrimination."
 
+    async def test_english_also_uses_structured_generator_when_configured(self, tmp_path):
+        from unittest.mock import AsyncMock, MagicMock
+        from conversation.manager import ConversationManager
+        from database.models import Mode
+        from legal_qa.client import LegalQAClient
+        from legal_qa.grounded_generator import GroundedLegalAnswerGenerator
+        from conversation.cases.models import LegalAssessment
+        from database.repository import SQLiteConversationRepository
+
+        db_path = str(tmp_path / "test_en_structure.db")
+        repo = SQLiteConversationRepository(db_path)
+        await repo.initialize()
+        qa_client = AsyncMock(spec=LegalQAClient)
+        qa_client.predict.return_value = {
+            "answer": "Raw 2-paragraph unformatted ML response",
+            "reasoning_chain": ["MHA_3", "MHA_21"],
+            "retrieved_cases": [],
+        }
+
+        mock_intake = AsyncMock()
+        mock_intake.analyze_turn.return_value = MagicMock(
+            extracted_facts={},
+            case_state={"case_domain": "healthcare", "jurisdiction": {}},
+            is_ready_for_qa=True,
+            followup_question=None,
+            synthesized_query="mental health restrictions",
+            direct_legal_answer="Mental Healthcare Act protects you.",
+            is_new_legal_issue=False,
+        )
+
+        mock_generator = AsyncMock(spec=GroundedLegalAnswerGenerator)
+        mock_generator.is_configured = True
+        mock_generator.build_assessment.return_value = LegalAssessment()
+        mock_generator.generate_answer.return_value = (
+            "## Understanding Your Inquiry\nDetailed structured response with headings.",
+            LegalAssessment(),
+        )
+
+        manager = ConversationManager(
+            repository=repo,
+            legal_qa_client=qa_client,
+            intake_service=mock_intake,
+            answer_generator=mock_generator,
+        )
+
+        record = await manager.create_conversation(Mode.INFORMATIVE, language="en")
+        result = await manager.process_message(record.conversation_id, "mental health restrictions")
+
+        # GroundedLegalAnswerGenerator MUST be called for English too, guaranteeing structured Markdown headings
+        assert mock_generator.generate_answer.called
+        call_kwargs = mock_generator.generate_answer.call_args.kwargs
+        assert call_kwargs.get("language") == "en"
+        assert call_kwargs.get("mode") == Mode.INFORMATIVE
+        assert "## Understanding Your Inquiry" in result["answer"]
+
+
 
 

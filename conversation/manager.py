@@ -387,9 +387,10 @@ class ConversationManager:
         active_lang = state.language or "en"
         original_answer: str | None = qa_response.get("answer") or intake_result.direct_legal_answer
 
-        if is_indic_language(active_lang) and self._answer_generator.is_configured:
-            # Regional languages require full LLM synthesis via GroundedLegalAnswerGenerator
-            # to guarantee the 6-part structure, bilingual statutory citations, and proper native vernacular.
+        if self._answer_generator.is_configured:
+            # Full LLM synthesis via GroundedLegalAnswerGenerator
+            # guarantees the structured Markdown headings, statutory citations, and proper tone
+            # across both English and regional languages.
             raw_direct, gen_assessment = await self._answer_generator.generate_answer(
                 case_state=case_state,
                 authorities=all_authorities,
@@ -400,7 +401,9 @@ class ConversationManager:
             if gen_assessment:
                 legal_assessment = gen_assessment
             direct_answer = raw_direct
-            if not original_answer:
+            if active_lang == "en":
+                original_answer = raw_direct
+            elif not original_answer:
                 english_direct, _ = await self._answer_generator.generate_answer(
                     case_state=case_state,
                     authorities=all_authorities,
@@ -409,18 +412,6 @@ class ConversationManager:
                     mode=state.mode,
                 )
                 original_answer = english_direct
-        elif self._answer_generator.is_configured and not qa_response.get("answer"):
-            raw_direct, gen_assessment = await self._answer_generator.generate_answer(
-                case_state=case_state,
-                authorities=all_authorities,
-                base_qa_answer=intake_result.direct_legal_answer,
-                language=active_lang,
-                mode=state.mode,
-            )
-            if gen_assessment:
-                legal_assessment = gen_assessment
-            direct_answer = raw_direct
-            original_answer = raw_direct
         elif qa_response.get("answer"):
             direct_answer = qa_response["answer"]
             original_answer = qa_response["answer"]
@@ -428,15 +419,13 @@ class ConversationManager:
             direct_answer = intake_result.direct_legal_answer
             original_answer = intake_result.direct_legal_answer
         else:
-            raw_direct, gen_assessment = await self._answer_generator.generate_answer(
+            raw_direct = self._answer_generator._fallback_template(
                 case_state=case_state,
                 authorities=all_authorities,
+                assessment=legal_assessment,
                 base_qa_answer=None,
-                language=active_lang,
                 mode=state.mode,
             )
-            if gen_assessment:
-                legal_assessment = gen_assessment
             direct_answer = raw_direct
             original_answer = raw_direct
 
