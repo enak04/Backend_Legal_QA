@@ -341,10 +341,10 @@ def extract_facts(text: str, last_question_key: str | None = None) -> dict[str, 
     elif re.search(r"\b(no pending salary|no unpaid salary|fully paid|no dues|all cleared|cleared my salary)\b", text_lower):
         facts["dues_period"] = "no pending dues"
 
-    # 5. Employment Type (Check government before general company)
-    if re.search(r"\b(government|govt|psu|civil servant|public sector)\b", text_lower):
+    # 5. Employment Type (Check government before private)
+    if re.search(r"\b(government|govt|psu|civil servant|public sector|central govt|state govt)\b", text_lower):
         facts["employment_type"] = "government"
-    elif re.search(r"\b(private|startup|tech firm|company|mnc|corporate|google|microsoft|amazon|apple|meta|infosys|tcs|wipro|accenture|cognizant|ibm|deloitte|flipkart|swiggy|zomato|uber|ola|firm|office|enterprise|ltd|pvt)\b", text_lower):
+    elif re.search(r"\b(private|pvt ltd|pvt|startup|mnc|corporate|it company|tech firm|google|microsoft|amazon|apple|meta|infosys|tcs|wipro|accenture|cognizant|ibm|deloitte|flipkart|swiggy|zomato|uber|ola)\b", text_lower):
         facts["employment_type"] = "private"
 
     # 5. Contract / Documentation

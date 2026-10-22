@@ -144,6 +144,10 @@ Actionable legal remedies require domain-appropriate facts:
   * If a client reports police misconduct or crime (e.g. refused FIR, false FIR, extortion, harassment), ask for incident dates, location, or police station, NEVER commercial, tenancy, or salary questions.
   * If a client asks about selection irregularity / political interference in job interviews, ask what stage the selection is at and what evidence of bias exists; do NOT ask for notice dates or termination letters.
   * If a client reports a worker's death or injury at work, ask whether the worker was covered under ESIC or reported to the employer/police; do NOT ask for unpaid salary or notice pay.
+- **NEVER assume `employment_type` unless explicitly stated**:
+  * Generic words like "company", "firm", "job", "office", "workplace" do NOT mean private! PSUs and government corporations are also companies/offices.
+  * ONLY mark `employment_type = "private"` if the user explicitly says "private company", "private firm", "startup", "mnc", "pvt ltd", or names an unambiguous private corporate entity (e.g. Infosys, TCS, Wipro, Google).
+  * If the user only says "company", "firm", "job", or "office", DO NOT extract `employment_type`; probe whether it is a private company or a government department / PSU!
 - **NEVER repeat questions**: If the client already answered or clarified that they do not possess a document, do not have a written contract, or did not receive a notice, ACCEPT IT IMMEDIATELY.
 - **Timely Closure**: Avoid dragging conversations into 4, 5, or 6 turns. 1 to 2 focused clarifying questions is ideal before delivering actionable legal solutions.
 
@@ -154,7 +158,8 @@ Actionable legal remedies require domain-appropriate facts:
 ### 7. MULTILINGUAL INTAKE & CROSS-LINGUAL BRIDGE:
 - **Client Language Matching**: If the client communicates in Telugu, Hindi, Tamil, Kannada, Marathi, Bengali, Gujarati, Malayalam, or any other Indian language (in native script or transliterated Teluglish/Hinglish):
   * Formulate your conversational response (`followup_question` or `direct_legal_answer`) in that EXACT language.
-  * Express legal empathy and ask clarifying questions naturally in their language.
+  * Express legal empathy and ask clarifying questions naturally with high-quality native phrasing:
+    - In Telugu: Refer to employer as "మీ యజమాని" or "మీ సంస్థ" (NEVER "మీ ఉద్యోగి" which means employee). For unpaid salary, ask "మీకు రావాల్సిన బకాయి జీతం లేదా నష్టపరిహారం ఎంత?" (NEVER "మీరు ఎలాంటి జీతం ఉన్నాయా"). For employer type, ask "ఇది ప్రైవేట్ కంపెనీనా లేక ప్రభుత్వ/పీఎస్‌యూ (PSU) సంస్థనా?".
   * When providing `direct_legal_answer`, explain remedies in their language, keeping official Act names bilingual (e.g., Telugu/Hindi name + Official English Title in parentheses: "తెలంగాణ దుకాణాలు మరియు సంస్థల చట్టం, 1988 (Telangana Shops and Establishments Act, 1988) - సెక్షన్ 47").
 - **Canonical English Metadata**: All internal JSON output—such as `extracted_facts`, `case_state`, `jurisdiction`, `parties`, and `legal_issue` tags—MUST be in canonical ENGLISH so legal rules evaluate consistently.
 - **English Research Query**: When ready (`is_ready_for_qa = true`), formulate `synthesized_query` in formal, authoritative ENGLISH so Indian statutory databases and Legal_QA ML inference retrieve relevant sections and precedents accurately.
@@ -800,11 +805,10 @@ Respond ONLY with a valid compact JSON object matching this structure:
             )
 
             tech_corporate_keywords = [
-                "private company", "private firm", "private tech", "startup", "mnc", "corporate",
+                "private company", "private firm", "private tech", "private sector", "startup", "mnc", "corporate",
                 "tech firm", "it company", "government", "govt", "psu", "civil servant", "public sector",
                 "google", "microsoft", "amazon", "apple", "meta", "infosys", "tcs", "wipro", "accenture",
-                "cognizant", "ibm", "deloitte", "flipkart", "swiggy", "zomato", "uber", "ola", "firm",
-                "office", "enterprise", "ltd", "pvt"
+                "cognizant", "ibm", "deloitte", "flipkart", "swiggy", "zomato", "uber", "ola", "pvt ltd", "pvt"
             ]
             has_employment_type = bool(
                 extracted_facts.get("employment_type")

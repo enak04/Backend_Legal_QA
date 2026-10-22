@@ -248,4 +248,57 @@ class TestMultilingualManagerFlow:
         # Should contain Devanagari characters
         assert any("\u0900" <= ch <= "\u097F" for ch in ans3)
 
+    async def test_indic_final_answer_calls_grounded_generator_even_if_intake_direct_answer_present(self, tmp_path):
+        db_path = str(tmp_path / "test_answer_gen.db")
+        repo = SQLiteConversationRepository(db_path)
+        await repo.initialize()
+
+        qa_client = AsyncMock(spec=LegalQAClient)
+        qa_client.predict.return_value = {
+            "question": "Client query",
+            "answer": "Base QA answer",
+            "reasoning_chain": [],
+            "retrieved_cases": [],
+        }
+
+        mock_intake = AsyncMock()
+        mock_intake.analyze_turn.return_value = MagicMock(
+            extracted_facts={"employment_type": "private", "state": "Telangana"},
+            case_state={"case_domain": "employment", "jurisdiction": {"state": "Telangana", "city": "Hyderabad"}},
+            is_ready_for_qa=True,
+            followup_question=None,
+            synthesized_query="Detailed question",
+            direct_legal_answer="Short 3-sentence blurb from intake",
+            is_new_legal_issue=False,
+        )
+
+        mock_generator = AsyncMock(spec=GroundedLegalAnswerGenerator)
+        mock_generator.is_configured = True
+        mock_generator.build_assessment.return_value = LegalAssessment()
+        mock_generator.generate_answer.return_value = (
+            "### పరిస్థితిని అర్థం చేసుకోవడం\nవివరణాత్మక చట్టపరమైన సలహా",
+            LegalAssessment(),
+        )
+
+        manager = ConversationManager(
+            repository=repo,
+            legal_qa_client=qa_client,
+            intake_service=mock_intake,
+            answer_generator=mock_generator,
+        )
+
+        record = await manager.create_conversation(Mode.ACTIONABLE, language="te")
+        result = await manager.process_message(record.conversation_id, "3000 rupees pending")
+
+        # GroundedLegalAnswerGenerator MUST have been called with language="te"
+        assert mock_generator.generate_answer.called
+        call_kwargs = mock_generator.generate_answer.call_args.kwargs
+        assert call_kwargs.get("language") == "te"
+        assert "పరిస్థితిని అర్థం చేసుకోవడం" in result["answer"]
+
+    async def test_company_word_does_not_falsely_assume_private_employment_type(self):
+        from conversation.followup import extract_facts
+        facts = extract_facts("na company notice ivvakunda job lo nundi tisesindi, nenu em cheyali")
+        assert "employment_type" not in facts
+
 
