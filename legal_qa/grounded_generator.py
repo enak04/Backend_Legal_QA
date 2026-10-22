@@ -535,16 +535,22 @@ class GroundedLegalAnswerGenerator:
 
     def _fallback_template(
         self,
-        state: UniversalCaseState,
-        authorities: list[RetrievedAuthority],
-        assessment: LegalAssessment,
+        case_state: UniversalCaseState | None = None,
+        authorities: list[RetrievedAuthority] | None = None,
+        assessment: LegalAssessment | None = None,
         base_qa_answer: str | None = None,
         mode: Any = None,
+        *,
+        state: UniversalCaseState | None = None,
     ) -> str:
         """
         Produce a reasonable text answer without an LLM call.
         Used when OpenAI is not configured or the call fails.
         """
+        cs = case_state or state or UniversalCaseState()
+        auths = authorities or []
+        assess = assessment or LegalAssessment()
+
         is_informative = str(mode).lower() in ("informative", "mode.informative")
         if is_informative and base_qa_answer:
             return base_qa_answer
@@ -553,13 +559,13 @@ class GroundedLegalAnswerGenerator:
 
         # Understanding
         parts.append("### Understanding Your Situation")
-        if state.summary:
-            parts.append(state.summary)
+        if cs.summary:
+            parts.append(cs.summary)
         elif base_qa_answer:
             parts.append(base_qa_answer)
 
         # Legal position
-        statutory = [a for a in authorities if a.authority_type != "precedent"]
+        statutory = [a for a in auths if a.authority_type != "precedent"]
         if statutory:
             parts.append("\n### Your Legal Position")
             for auth in statutory[:3]:  # Cap at 3 most relevant
@@ -568,9 +574,9 @@ class GroundedLegalAnswerGenerator:
                 )
 
         # Actions
-        if assessment.action_plan:
+        if assess.action_plan:
             parts.append("\n### What You Should Do Now")
-            for step in assessment.action_plan:
+            for step in assess.action_plan:
                 parts.append(step)
 
         # Evidence
