@@ -295,6 +295,14 @@ class TestMultilingualManagerFlow:
         call_kwargs = mock_generator.generate_answer.call_args.kwargs
         assert call_kwargs.get("language") == "te"
         assert "పరిస్థితిని అర్థం చేసుకోవడం" in result["answer"]
+        assert result["original_answer"] == "Base QA answer"
+
+        # Check repository persistence
+        saved_rec = await repo.get(record.conversation_id)
+        assert len(saved_rec.legal_qa_results) == 1
+        assert saved_rec.legal_qa_results[0].answer == "### పరిస్థితిని అర్థం చేసుకోవడం\nవివరణాత్మక చట్టపరమైన సలహా"
+        assert saved_rec.legal_qa_results[0].original_answer == "Base QA answer"
+        assert saved_rec.messages[-1].original_content == "Base QA answer"
 
     async def test_company_word_does_not_falsely_assume_private_employment_type(self):
         from conversation.followup import extract_facts

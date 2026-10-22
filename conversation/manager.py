@@ -223,7 +223,7 @@ class ConversationManager:
                 intake_result.direct_legal_answer
                 or self._generate_conceptual_fallback(user_message)
             )
-            add_assistant_message(state, direct_answer)
+            add_assistant_message(state, direct_answer, original_content=intake_result.direct_legal_answer or direct_answer)
             state.last_assistant_question = None
             state.stage = ConversationStage.ANSWERED
             await self._repo.update(state)
@@ -234,7 +234,9 @@ class ConversationManager:
                 "mode": state.mode.value,
                 "language": state.language,
                 "answer": direct_answer,
+                "original_answer": intake_result.direct_legal_answer or direct_answer,
                 "message": direct_answer,
+                "original_message": intake_result.direct_legal_answer or direct_answer,
                 "case_state": state.facts.get("case_state"),
                 "legal_assessment": state.facts.get("legal_assessment"),
                 "reasoning_chain": [],
@@ -272,12 +274,13 @@ class ConversationManager:
 
         # 6. Check if more information is needed
         if not intake_result.is_ready_for_qa and intake_result.followup_question:
-            followup_question = intake_result.followup_question
+            original_followup = intake_result.followup_question
+            followup_question = original_followup
             active_lang = state.language or "en"
             if is_indic_language(active_lang):
                 followup_question = localize_system_question(followup_question, active_lang)
 
-            add_assistant_message(state, followup_question)
+            add_assistant_message(state, followup_question, original_content=original_followup)
             state.stage = ConversationStage.GATHERING_INFO
             await self._repo.update(state)
 
@@ -287,6 +290,7 @@ class ConversationManager:
                 "mode": state.mode.value,
                 "language": state.language,
                 "message": followup_question,
+                "original_message": original_followup,
                 "answer": followup_question,
                 "case_state": state.facts.get("case_state"),
                 "timestamp": state.messages[-1].timestamp,
@@ -305,7 +309,7 @@ class ConversationManager:
                     f"In connection with your {case_state.case_domain or 'legal'} dispute, you should adhere to the prescribed statutory timelines and preserve all documentation. "
                     "If you are drafting a legal notice or calculating dues, provide 15 to 30 days for compliance before initiating formal proceedings before the jurisdictional forum."
                 )
-            add_assistant_message(state, direct_answer)
+            add_assistant_message(state, direct_answer, original_content=conversational_reply or direct_answer)
             state.last_assistant_question = None
             state.stage = ConversationStage.ANSWERED
             await self._repo.update(state)
@@ -316,6 +320,7 @@ class ConversationManager:
                 "mode": state.mode.value,
                 "language": state.language,
                 "answer": direct_answer,
+                "original_answer": conversational_reply or direct_answer,
                 "message": direct_answer,
                 "case_state": state.facts.get("case_state"),
                 "legal_assessment": state.facts.get("legal_assessment"),
@@ -373,12 +378,13 @@ class ConversationManager:
         )
         all_authorities = statutory_authorities + precedent_authorities
 
-        # 8. Use Legal_QA backend answer directly as-is (or generate fallback if empty)
+        # 8. Determine final legal consultation response and preserve original English reply
         legal_assessment = self._answer_generator.build_assessment(
             case_state=case_state,
             authorities=all_authorities,
         )
         active_lang = state.language or "en"
+        original_answer: str | None = qa_response.get("answer") or intake_result.direct_legal_answer
 
         if is_indic_language(active_lang) and self._answer_generator.is_configured:
             # Regional languages require full LLM synthesis via GroundedLegalAnswerGenerator
@@ -392,6 +398,14 @@ class ConversationManager:
             if gen_assessment:
                 legal_assessment = gen_assessment
             direct_answer = raw_direct
+            if not original_answer:
+                english_direct, _ = await self._answer_generator.generate_answer(
+                    case_state=case_state,
+                    authorities=all_authorities,
+                    base_qa_answer=None,
+                    language="en",
+                )
+                original_answer = english_direct
         elif self._answer_generator.is_configured and not qa_response.get("answer"):
             raw_direct, gen_assessment = await self._answer_generator.generate_answer(
                 case_state=case_state,
@@ -402,10 +416,13 @@ class ConversationManager:
             if gen_assessment:
                 legal_assessment = gen_assessment
             direct_answer = raw_direct
+            original_answer = raw_direct
         elif qa_response.get("answer"):
             direct_answer = qa_response["answer"]
+            original_answer = qa_response["answer"]
         elif intake_result.direct_legal_answer:
             direct_answer = intake_result.direct_legal_answer
+            original_answer = intake_result.direct_legal_answer
         else:
             raw_direct, gen_assessment = await self._answer_generator.generate_answer(
                 case_state=case_state,
@@ -416,11 +433,16 @@ class ConversationManager:
             if gen_assessment:
                 legal_assessment = gen_assessment
             direct_answer = raw_direct
+            original_answer = raw_direct
+
+        if not original_answer:
+            original_answer = direct_answer
 
         # 9. Persist result and structured assessment
         result = LegalQAResult(
             question=constructed_question,
             answer=direct_answer,
+            original_answer=original_answer,
             reasoning_chain=qa_response.get("reasoning_chain", []),
             retrieved_cases=[
                 {"question": c.get("question", ""), "answer": c.get("answer", "")}
@@ -429,7 +451,8 @@ class ConversationManager:
         )
         store_legal_qa_result(state, result)
         set_legal_assessment(state, legal_assessment)
-        add_assistant_message(state, direct_answer)
+        add_assistant_message(state, direct_answer, original_content=original_answer)
+        state.facts["original_answer"] = original_answer
         state.last_assistant_question = None
         state.stage = ConversationStage.ANSWERED
         await self._repo.update(state)
@@ -460,7 +483,9 @@ class ConversationManager:
             "mode": state.mode.value,
             "language": state.language,
             "answer": direct_answer,
+            "original_answer": original_answer,
             "message": direct_answer,
+            "original_message": original_answer,
             "case_state": state.facts.get("case_state"),
             "legal_assessment": state.facts.get("legal_assessment"),
             "reasoning_chain": result.reasoning_chain,

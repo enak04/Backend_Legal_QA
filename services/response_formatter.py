@@ -68,6 +68,7 @@ def format_conversation_response(
             {
                 "role": msg.role.value,
                 "content": msg.content,
+                "original_content": getattr(msg, "original_content", None),
                 "timestamp": msg.timestamp,
             }
             for msg in record.messages
@@ -76,6 +77,7 @@ def format_conversation_response(
             {
                 "question": r.question,
                 "answer": r.answer,
+                "original_answer": getattr(r, "original_answer", None),
                 "reasoning_chain": r.reasoning_chain,
                 "sources": [
                     {"question": c.question, "answer": c.answer}

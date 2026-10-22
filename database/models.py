@@ -44,6 +44,7 @@ class Message(BaseModel):
     """A single message in a conversation."""
     role: MessageRole
     content: str
+    original_content: str | None = None
     timestamp: str = Field(
         default_factory=lambda: datetime.now(timezone.utc).isoformat()
     )
@@ -61,6 +62,7 @@ class LegalQAResult(BaseModel):
     """The full response from the Legal_QA /predict endpoint."""
     question: str
     answer: str
+    original_answer: str | None = None
     reasoning_chain: list[str]
     retrieved_cases: list[RetrievedCase]
 

@@ -44,12 +44,13 @@ def add_user_message(state: ConversationRecord, content: str) -> None:
         state.stage = ConversationStage.GATHERING_INFO
 
 
-def add_assistant_message(state: ConversationRecord, content: str) -> None:
+def add_assistant_message(state: ConversationRecord, content: str, original_content: str | None = None) -> None:
     """Append an assistant (follow-up or answer) message."""
     state.messages.append(
         Message(
             role=MessageRole.ASSISTANT,
             content=content,
+            original_content=original_content,
             timestamp=datetime.now(timezone.utc).isoformat(),
         )
     )
